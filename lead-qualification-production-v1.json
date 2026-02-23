@@ -1,0 +1,1256 @@
+{
+  "name": "Lead Qualification Pipeline (Adapted)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hubspot-lead-webhook-dd",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "de22e92e-4d83-4348-ac66-1557e9fb68a7",
+      "name": "HubSpot Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2336,
+        -272
+      ],
+      "webhookId": "cd3b15ae-3055-4273-8a03-627dafccf887"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const payload = item.json;\n  const contact = payload.body || payload;\n  \n  // Extract email for dedup_key\n  const email = (contact.properties?.email?.value || contact.email || '').toLowerCase().trim();\n  \n  // Build enrichment object with extended data\n  const enrichment = {\n    job_title: contact.properties?.jobtitle?.value || contact.jobTitle || contact.job_title || null,\n    employee_count: parseInt(contact.properties?.numberofemployees?.value || contact.employeeCount || contact.employee_count || '0') || null,\n    deal_size: parseFloat(contact.properties?.hs_deal_amount?.value || contact.dealSize || contact.deal_size || '0') || null,\n    website: contact.properties?.website?.value || contact.website || null,\n    industry: contact.properties?.industry?.value || contact.industry || null,\n    hubspot_vid: contact.vid || contact.id || null,\n    lifecycle_stage: contact.properties?.lifecyclestage?.value || null,\n    lead_status: contact.properties?.hs_lead_status?.value || null\n  };\n  \n  // Source metadata from HubSpot\n  const sourceMetadata = {\n    hubspot_source: contact.properties?.hs_analytics_source?.value || contact.lead_source || null,\n    hubspot_source_data_1: contact.properties?.hs_analytics_source_data_1?.value || null,\n    hubspot_source_data_2: contact.properties?.hs_analytics_source_data_2?.value || null,\n    first_conversion: contact.properties?.first_conversion_event_name?.value || null,\n    recent_conversion: contact.properties?.recent_conversion_event_name?.value || null\n  };\n  \n  results.push({\n    json: {\n      // For leads table\n      email: email,\n      dedup_key: email,\n      name: `${contact.properties?.firstname?.value || contact.firstName || contact.first_name || ''} ${contact.properties?.lastname?.value || contact.lastName || contact.last_name || ''}`.trim() || null,\n      phone: contact.properties?.phone?.value || contact.phone || null,\n      company: contact.properties?.company?.value || contact.company || null,\n      domain: contact.properties?.website?.value || contact.website || null,\n      message: contact.properties?.message?.value || null,\n      source: 'hubspot',\n      source_campaign: contact.properties?.hs_analytics_source_data_1?.value || null,\n      source_metadata: sourceMetadata,\n      enrichment: enrichment,\n      raw_json: contact,\n      is_demo: false,\n      received_at: new Date().toISOString(),\n      \n      // For scoring (pass through)\n      _scoring_data: {\n        employee_count: enrichment.employee_count,\n        job_title: enrichment.job_title,\n        deal_size: enrichment.deal_size,\n        lead_source: contact.properties?.hs_analytics_source?.value || contact.lead_source || 'unknown',\n        first_conversion: sourceMetadata.first_conversion,\n        recent_conversion: sourceMetadata.recent_conversion\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "4f91f0c9-8b3c-45aa-b541-d3255a9ff7e6",
+      "name": "Extract Lead Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2112,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.email }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3ad0b9b5-c809-4035-bec5-0e6a97342683",
+      "name": "Check Email Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1904,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/leads?email=eq.{{ $json.email }}&select=id,email,touch_count,last_seen",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0a5e1d54-2c2b-41cf-b929-2e2e8c082c84",
+      "name": "Query Lead By Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1744,
+        -272
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "dedup-cond-0001",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ff03d03c-3be8-4f09-bf14-a5bbd5ab9c49",
+      "name": "IF Lead Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1552,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/leads?id=eq.{{ $node[\"Query Lead By Email\"].json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"touch_count\": {{ $node[\"Query Lead By Email\"].json.touch_count + 1 }},\n  \"last_seen\": \"{{ new Date().toISOString() }}\",\n  \"company\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.company) }},\n  \"source_campaign\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.source_campaign) }}\n}",
+        "options": {}
+      },
+      "id": "edabe90d-d04c-4eea-8a4d-6591f2b0394d",
+      "name": "Update Existing Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1392,
+        -448
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/leads?id=eq.{{ $node[\"Query Lead By Email\"].json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b31519fd-5f62-4e54-8d7b-0dabfe1c633a",
+      "name": "Get Updated Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1168,
+        -448
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/leads",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"email\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.email) }},\n  \"dedup_key\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.dedup_key) }},\n  \"name\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.name) }},\n  \"phone\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.phone) }},\n  \"company\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.company) }},\n  \"domain\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.domain) }},\n  \"message\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.message) }},\n  \"source\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.source) }},\n  \"source_campaign\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.source_campaign) }},\n  \"source_metadata\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.source_metadata) }},\n  \"enrichment\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.enrichment) }},\n  \"raw_json\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.raw_json) }},\n  \"is_demo\": {{ $node[\"Extract Lead Data\"].json.is_demo }},\n  \"received_at\": {{ JSON.stringify($node[\"Extract Lead Data\"].json.received_at) }}\n}",
+        "options": {
+          "response": {
+            "response": {}
+          }
+        }
+      },
+      "id": "13fa01b8-d8e3-4b19-a85a-6fc618a2e9c0",
+      "name": "Insert Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1376,
+        -128
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge the inserted lead response with scoring data\nconst item = $input.first();\nconst insertedLead = Array.isArray(item.json) ? item.json[0] : item.json;\nconst previousData = $('Extract Lead Data').first().json;\n\nreturn [{\n  json: {\n    lead_id: insertedLead.id,\n    lead_email: insertedLead.email,\n    lead_name: insertedLead.name,\n    lead_company: insertedLead.company,\n    is_demo: insertedLead.is_demo || false,\n    is_new_lead: insertedLead.is_new_lead,\n    scoring_data: previousData._scoring_data,\n    enrichment: insertedLead.enrichment\n  }\n}];"
+      },
+      "id": "82e00863-0b8e-42bb-9119-8eb9c9eea527",
+      "name": "Merge Lead Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -752,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst data = item.json;\nconst s = data.scoring_data || {};\n\n// ============ FIT SCORE (0-100) ============\n// How good is this lead for our business?\n\n// Company size (0-30 points)\nlet companySizeScore = 0;\nconst employees = parseInt(s.employee_count) || 0;\nif (employees >= 1000) companySizeScore = 30;\nelse if (employees >= 500) companySizeScore = 25;\nelse if (employees >= 100) companySizeScore = 20;\nelse if (employees >= 50) companySizeScore = 15;\nelse if (employees >= 10) companySizeScore = 8;\nelse if (employees > 0) companySizeScore = 3;\nelse companySizeScore = 0;\n\n// Job title / decision maker (0-40 points)\nlet titleScore = 0;\nconst title = (s.job_title || '').toLowerCase();\nif (title.match(/^(ceo|cto|cfo|cmo|coo|chief|founder|owner|president)/)) titleScore = 40;\nelse if (title.match(/(vp|vice president|director)/)) titleScore = 32;\nelse if (title.match(/(head of|senior manager|sr\\. manager)/)) titleScore = 25;\nelse if (title.match(/manager/)) titleScore = 18;\nelse if (title.match(/(lead|principal|senior)/)) titleScore = 12;\nelse if (title.match(/(engineer|developer|analyst|specialist)/)) titleScore = 6;\nelse titleScore = 0;\n\n// Deal size potential (0-30 points)\nlet dealScore = 0;\nconst dealSize = parseFloat(s.deal_size) || 0;\nif (dealSize >= 100000) dealScore = 30;\nelse if (dealSize >= 50000) dealScore = 24;\nelse if (dealSize >= 25000) dealScore = 18;\nelse if (dealSize >= 10000) dealScore = 12;\nelse if (dealSize > 0) dealScore = 6;\nelse dealScore = 0;\n\nconst fitScore = Math.min(100, companySizeScore + titleScore + dealScore);\n\n// ============ URGENCY SCORE (0-100) ============\n// How fast should we act on this lead?\n\n// Lead source quality (0-40 points)\nlet sourceScore = 0;\nconst source = (s.lead_source || '').toLowerCase();\nif (source.match(/referral|partner/)) sourceScore = 40;\nelse if (source.match(/demo|request|pricing/)) sourceScore = 38;\nelse if (source.match(/organic|search/)) sourceScore = 28;\nelse if (source.match(/paid|ads|ppc/)) sourceScore = 22;\nelse if (source.match(/social|linkedin|twitter/)) sourceScore = 18;\nelse if (source.match(/email|campaign/)) sourceScore = 14;\nelse sourceScore = 8;\n\n// Conversion signals (0-35 points)\nlet conversionScore = 0;\nconst firstConv = (s.first_conversion || '').toLowerCase();\nconst recentConv = (s.recent_conversion || '').toLowerCase();\nif (firstConv.match(/demo|pricing|contact sales/)) conversionScore += 20;\nelse if (firstConv.match(/trial|signup/)) conversionScore += 15;\nelse if (firstConv.match(/whitepaper|ebook|webinar/)) conversionScore += 8;\nif (recentConv.match(/demo|pricing|contact sales/)) conversionScore += 15;\nelse if (recentConv.match(/trial|signup/)) conversionScore += 10;\nconversionScore = Math.min(35, conversionScore);\n\n// Timing bonus (0-25 points) - recent activity = higher urgency\n// Since this is a new lead from webhook, assume high recency\nconst timingScore = 25;\n\nconst urgencyScore = Math.min(100, sourceScore + conversionScore + timingScore);\n\n// Build reasoning\nconst reason = [\n  `FIT (${fitScore}/100): Company size ${companySizeScore}/30, Title ${titleScore}/40, Deal potential ${dealScore}/30.`,\n  `URGENCY (${urgencyScore}/100): Source quality ${sourceScore}/40, Conversion signals ${conversionScore}/35, Timing ${timingScore}/25.`,\n  `Recommendation: ${fitScore >= 80 ? 'HIGH PRIORITY - Call immediately' : fitScore >= 50 ? 'MEDIUM - Add to nurture sequence' : 'LOW - Manual review needed'}`\n].join(' ');\n\nreturn [{\n  json: {\n    lead_id: data.lead_id,\n    lead_email: data.lead_email,\n    lead_name: data.lead_name,\n    lead_company: data.lead_company,\n    is_demo: data.is_demo,\n    is_new_lead: data.is_new_lead,\n    fit: fitScore,\n    urgency: urgencyScore,\n    reason: reason,\n    model: 'rule-based-v1',\n    prompt_version: '1.0.0',\n    tokens_used: 0,\n    score_breakdown: {\n      fit: { company_size: companySizeScore, title: titleScore, deal_size: dealScore },\n      urgency: { source: sourceScore, conversion: conversionScore, timing: timingScore }\n    }\n  }\n}];"
+      },
+      "id": "cc7298cd-7eea-4b95-b088-6dd385b82dd2",
+      "name": "Calculate Scores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/scores",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": {{ JSON.stringify($json.lead_id) }},\n  \"is_demo\": {{ $json.is_demo }},\n  \"fit\": {{ $json.fit }},\n  \"urgency\": {{ $json.urgency }},\n  \"reason\": {{ JSON.stringify($json.reason) }},\n  \"model\": {{ JSON.stringify($json.model) }},\n  \"prompt_version\": {{ JSON.stringify($json.prompt_version) }},\n  \"tokens_used\": {{ $json.tokens_used }}\n}",
+        "options": {}
+      },
+      "id": "0d57563f-aa63-41ea-a4e5-4530416ab6d4",
+      "name": "Insert Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -352,
+        -288
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst scoreResponse = Array.isArray(item.json) ? item.json[0] : item.json;\nconst previousData = $('Calculate Scores').first().json;\n\nreturn [{\n  json: {\n    lead_id: previousData.lead_id,\n    lead_email: previousData.lead_email,\n    lead_name: previousData.lead_name,\n    lead_company: previousData.lead_company,\n    is_demo: previousData.is_demo,\n    is_new_lead: previousData.is_new_lead,\n    score_id: scoreResponse.id,\n    fit: previousData.fit,\n    urgency: previousData.urgency,\n    reason: previousData.reason,\n    score_breakdown: previousData.score_breakdown\n  }\n}];"
+      },
+      "id": "6b49b91c-d6e6-4554-849d-22e00711e6bf",
+      "name": "Merge Score Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "2eed1b0f-7993-4cba-ae89-63cea749400b",
+              "leftValue": "={{ $json.fit }}",
+              "rightValue": 80,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "be123dfc-a114-4828-b47c-6c0f946aac62",
+      "name": "High Fit Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        48,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "874104d9-ecfb-4daf-925b-c1778d623b2b",
+              "leftValue": "={{ $json.fit }}",
+              "rightValue": 50,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3a1db134-3a6b-434f-b505-62c79e0491fc",
+      "name": "Medium Fit Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        400,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/actions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $node[\"Merge Lead Data\"].json.lead_id }}\",\n  \"action\": \"call_now\",\n  \"channel\": \"slack\",\n  \"status\": \"queued\",\n  \"idempotency_key\": \"{{ $node[\"Merge Lead Data\"].json.lead_id }}_call_now_{{ new Date().toISOString().split('T')[0] }}\"\n}",
+        "options": {}
+      },
+      "id": "19a33e2d-2b4a-4121-bef3-1ead7118ffbb",
+      "name": "Create Call Action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        608,
+        -368
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "user",
+        "user": {
+          "__rl": true,
+          "value": "U09D9L51DBP",
+          "mode": "id"
+        },
+        "text": "=🔥 *HIGH PRIORITY LEAD - CALL NOW*\n\n*Name:* {{ $node[\"Calculate Scores\"].json.lead_name }}\n*Company:* {{ $node[\"Calculate Scores\"].json.lead_company }}\n*Email:* {{ $node[\"Calculate Scores\"].json.lead_email }}\n\n*Fit Score:* {{ $node[\"Calculate Scores\"].json.fit }}/100\n*Urgency Score:* {{ $node[\"Calculate Scores\"].json.urgency }}/100\n\n*Analysis:* {{ $node[\"Calculate Scores\"].json.reason }}\n\n*Lead ID:* {{ $node[\"Merge Lead Data\"].json.lead_id }}\n\n<http://localhost:5678/workflow/{{ $workflow.id }}|View Workflow>",
+        "otherOptions": {}
+      },
+      "id": "f9e28cb7-9889-49ae-a2cf-a08e6ead71f8",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        896,
+        -288
+      ],
+      "webhookId": "904fc614-8d28-4a2d-b26e-2fe25da06ab3",
+      "credentials": {
+        "slackApi": {
+          "id": "rxcSTY9Cm1WoJ4yJ",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/actions?lead_id=eq.{{ $node[\"Merge Lead Data\"].json.lead_id }}&action=eq.call_now",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"sent\",\n  \"sent_at\": {{ JSON.stringify(new Date().toISOString()) }}\n}",
+        "options": {}
+      },
+      "id": "2be411b5-5441-4fb9-bcc1-a71e2085732a",
+      "name": "Update Action Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1264,
+        -288
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/actions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $node[\"Merge Lead Data\"].json.lead_id }}\",\n  \"action\": \"nurture_sequence\",\n  \"channel\": \"email\",\n  \"status\": \"queued\",\n  \"idempotency_key\": \"{{ $node[\"Merge Lead Data\"].json.lead_id }}_nurture_sequence_{{ new Date().toISOString().split('T')[0] }}\"\n}",
+        "options": {}
+      },
+      "id": "fa3a495e-54b6-4f4d-b237-c6ebcab5941a",
+      "name": "Create Nurture Action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        896,
+        -112
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/nurture_queue",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $node[\"Merge Lead Data\"].json.lead_id }}\",\n  \"score_id\": \"{{ $node[\"Insert Score\"].json.id }}\",\n  \"is_demo\": {{ $node[\"Merge Lead Data\"].json.is_demo || false }},\n  \"nurture_stage\": \"initial\",\n  \"next_action_date\": \"{{ new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString() }}\",\n  \"action_count\": 0\n}",
+        "options": {}
+      },
+      "id": "eb582061-f683-40fc-ab60-112286fd3619",
+      "name": "Add to Nurture Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1264,
+        -112
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/actions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": \"{{ $node[\"Merge Lead Data\"].json.lead_id }}\",\n  \"action\": \"manual_review\",\n  \"channel\": \"none\",\n  \"status\": \"queued\",\n  \"idempotency_key\": \"{{ $node[\"Merge Lead Data\"].json.lead_id }}_manual_review_{{ new Date().toISOString().split('T')[0] }}\"\n}",
+        "options": {}
+      },
+      "id": "8d8cee9d-c6a5-49f8-872c-eaac5b07b122",
+      "name": "Create Review Action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        896,
+        128
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"lead_id\": {{ JSON.stringify($node[\"Merge Lead Data\"].json.lead_id) }},\n  \"fit\": {{ $node[\"Calculate Scores\"].json.fit }},\n  \"urgency\": {{ $node[\"Calculate Scores\"].json.urgency }},\n  \"is_new_lead\": {{ $node[\"Merge Lead Data\"].json.is_new_lead }},\n  \"action\": {{ JSON.stringify($node[\"Merge Lead Data\"].json.is_new_lead ? ($node[\"Calculate Scores\"].json.fit >= 80 ? \"call_now\" : $node[\"Calculate Scores\"].json.fit >= 50 ? \"nurture_sequence\" : \"manual_review\") : \"none_existing_lead\") }},\n  \"processed_at\": {{ JSON.stringify(new Date().toISOString()) }}\n}",
+        "options": {}
+      },
+      "id": "51246312-a969-45e8-bfa8-9630507747a0",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1472,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": false, \"error\": \"Missing email address\" }",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "c97678cf-94e6-405d-b98f-01ee22e871a4",
+      "name": "Invalid Lead Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1680,
+        32
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5e9ca908-a4c9-4811-aee1-4eee7af7d63d",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -2336,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst error = item.json;\n\n// Try to extract lead_id from the execution data\nlet leadId = null;\ntry {\n  // Check various places where lead_id might be\n  if (error.execution?.data?.resultData?.runData) {\n    const runData = error.execution.data.resultData.runData;\n    // Look in Merge Lead Data or Insert Lead results\n    if (runData['Merge Lead Data']?.[0]?.data?.main?.[0]?.[0]?.json?.lead_id) {\n      leadId = runData['Merge Lead Data'][0].data.main[0][0].json.lead_id;\n    } else if (runData['Insert Lead']?.[0]?.data?.main?.[0]?.[0]?.json?.id) {\n      leadId = runData['Insert Lead'][0].data.main[0][0].json.id;\n    }\n  }\n} catch (e) {\n  // Could not extract lead_id\n}\n\nreturn [{\n  json: {\n    lead_id: leadId,\n    workflow_name: 'Lead Qualification Pipeline (Adapted)',\n    error_message: error.message || 'Unknown error',\n    error_node: error.node?.name || 'Unknown',\n    error_data: {\n      timestamp: error.timestamp,\n      workflow_id: error.workflow?.id,\n      execution_id: error.execution?.id,\n      stack: error.stack\n    },\n    resolved: false\n  }\n}];"
+      },
+      "id": "19af6c46-7390-4d21-b114-f892ac1c9b28",
+      "name": "Extract Error Lead ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2112,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ivzmpbtbxvbepzstcmjf.supabase.co/rest/v1/workflow_errors",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"workflow_name\": {{ JSON.stringify($json.workflow_name) }},\n  \"lead_id\": {{ $json.lead_id ? JSON.stringify($json.lead_id) : 'null' }},\n  \"error_message\": {{ JSON.stringify($json.error_message) }},\n  \"error_node\": {{ JSON.stringify($json.error_node) }},\n  \"error_data\": {{ JSON.stringify($json.error_data) }},\n  \"resolved\": false\n}",
+        "options": {}
+      },
+      "id": "ab5e85c6-e398-41ad-af51-1def394198ad",
+      "name": "Log Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1888,
+        224
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "V71KAo5unljucltp",
+          "name": "Supabase Service Role"
+        },
+        "httpMultipleHeadersAuth": {
+          "id": "TRaQS5BClH8PQ73O",
+          "name": "Supabase Lead Intake Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "user",
+        "user": {
+          "__rl": true,
+          "value": "U09D9L51DBP",
+          "mode": "id"
+        },
+        "text": "=⚠️ *Lead Qualification Workflow Error*\n\n*Node:* {{ $json.node?.name || \"Unknown\" }}\n*Error:* {{ $json.error?.message || \"Unknown error\" }}\n*Time:* {{ $now }}\n\nPlease investigate in n8n: <http://localhost:5678/workflow/{{ $workflow.id }}|View Workflow>",
+        "otherOptions": {}
+      },
+      "id": "aa1e967f-de59-455c-a2e3-c4adf52d2364",
+      "name": "Slack Error Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -1664,
+        224
+      ],
+      "webhookId": "e487fed9-e93e-4d13-8873-717caf831354",
+      "credentials": {
+        "slackApi": {
+          "id": "rxcSTY9Cm1WoJ4yJ",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...($input.first().json),\n    is_new_lead: true\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1088,
+        -160
+      ],
+      "id": "3d7a34bf-f439-4a77-adb9-254367705793",
+      "name": "Mark as New Lead"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...($input.first().json),\n    is_new_lead: false\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        -432
+      ],
+      "id": "09869144-edbf-4ee8-8326-00947faecf16",
+      "name": "Mark as Existing Lead"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "new-lead-high",
+              "leftValue": "={{ $json.is_new_lead }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        256,
+        -288
+      ],
+      "id": "e8652f35-611e-42c2-b01c-01c1989d1431",
+      "name": "IF New Lead Only (High)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "new-lead-medium",
+              "leftValue": "={{ $json.is_new_lead }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        656,
+        -112
+      ],
+      "id": "37b1b774-f7ef-48bf-a114-74624ea7b811",
+      "name": "IF New Lead Only (Medium)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "new-lead-low",
+              "leftValue": "={{ $json.is_new_lead }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        656,
+        48
+      ],
+      "id": "63edc27d-2e2f-4b1d-8698-c50453e926a0",
+      "name": "IF New Lead Only (Low)"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "HubSpot Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Lead Data": {
+      "main": [
+        [
+          {
+            "node": "Check Email Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Email Exists": {
+      "main": [
+        [
+          {
+            "node": "Query Lead By Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Invalid Lead Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Lead By Email": {
+      "main": [
+        [
+          {
+            "node": "IF Lead Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Lead Exists": {
+      "main": [
+        [
+          {
+            "node": "Update Existing Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Existing Lead": {
+      "main": [
+        [
+          {
+            "node": "Get Updated Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Updated Lead": {
+      "main": [
+        [
+          {
+            "node": "Mark as Existing Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Lead": {
+      "main": [
+        [
+          {
+            "node": "Mark as New Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Lead Data": {
+      "main": [
+        [
+          {
+            "node": "Calculate Scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Scores": {
+      "main": [
+        [
+          {
+            "node": "Insert Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Score": {
+      "main": [
+        [
+          {
+            "node": "Merge Score Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Score Response": {
+      "main": [
+        [
+          {
+            "node": "High Fit Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Fit Check": {
+      "main": [
+        [
+          {
+            "node": "IF New Lead Only (High)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Medium Fit Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF New Lead Only (High)": {
+      "main": [
+        [
+          {
+            "node": "Create Call Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Medium Fit Check": {
+      "main": [
+        [
+          {
+            "node": "IF New Lead Only (Medium)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF New Lead Only (Low)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF New Lead Only (Medium)": {
+      "main": [
+        [
+          {
+            "node": "Create Nurture Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF New Lead Only (Low)": {
+      "main": [
+        [
+          {
+            "node": "Create Review Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Call Action": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "Update Action Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Action Sent": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Nurture Action": {
+      "main": [
+        [
+          {
+            "node": "Add to Nurture Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to Nurture Queue": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Review Action": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Error Lead ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Error Lead ID": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Error": {
+      "main": [
+        [
+          {
+            "node": "Slack Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark as New Lead": {
+      "main": [
+        [
+          {
+            "node": "Merge Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark as Existing Lead": {
+      "main": [
+        [
+          {
+            "node": "Merge Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "321c1b22-1f77-4077-80c5-dafa183b05cc",
+  "meta": {
+    "instanceId": "afc61f183dc7949642ebff157a589076487730c4509fb35b7cacc1a5789b8d72"
+  },
+  "id": "Sifyi7LQWpuGQtPGTPpYY",
+  "tags": []
+}
