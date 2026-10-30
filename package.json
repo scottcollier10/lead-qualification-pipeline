@@ -1,0 +1,21 @@
+{
+  "name": "lead-qualification-pipeline-v2",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Lead Qualification Pipeline v2: local build and test harness for the n8n workflows and lq_v2 schema",
+  "scripts": {
+    "build": "node scripts/build-workflows.js",
+    "test:unit": "node --test test/unit/*.test.js",
+    "test:workflows": "node --test test/workflows/*.test.js",
+    "db:up": "bash scripts/local-db.sh up",
+    "db:down": "bash scripts/local-db.sh down",
+    "test:db": "node --test --test-concurrency=1 test/db/*.test.js",
+    "test": "npm run test:unit && npm run test:workflows && npm run test:db",
+    "e2e:up": "node test/e2e/fake-cloud.js > test/e2e/.work/fake-cloud.log 2>&1 & bash test/e2e/setup.sh",
+    "e2e:down": "bash test/e2e/teardown.sh",
+    "test:e2e": "node --test --test-concurrency=1 --test-timeout=180000 test/e2e/e2e.test.js"
+  },
+  "devDependencies": {
+    "pg": "^8.23.1"
+  }
+}
