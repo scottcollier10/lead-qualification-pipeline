@@ -67,7 +67,12 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ channel: \"__LQ_V2_SLACK_OPS_CHANNEL_ID__\", text: $json.slack_text, unfurl_links: false }) }}",
         "options": {
-          "timeout": 10000
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         }
       },
       "credentials": {
@@ -75,8 +80,7 @@
           "id": "__LQ_V2_CRED_SLACK_ID__",
           "name": "__LQ_V2_CRED_SLACK_NAME__"
         }
-      },
-      "onError": "continueRegularOutput"
+      }
     },
     {
       "id": "23735fb8-fb14-458c-a91d-9edfa7b29fd1",
@@ -105,7 +109,12 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ p_error: $json }) }}",
         "options": {
-          "timeout": 15000
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         }
       },
       "credentials": {
@@ -113,8 +122,7 @@
           "id": "__LQ_V2_CRED_SUPABASE_ID__",
           "name": "__LQ_V2_CRED_SUPABASE_NAME__"
         }
-      },
-      "onError": "continueRegularOutput"
+      }
     }
   ],
   "connections": {

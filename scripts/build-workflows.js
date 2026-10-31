@@ -145,7 +145,7 @@ function buildIntake(c) {
   const name = 'LQ v2 - Intake';
   const b = workflowBuilder(name);
   sticky(b, name,
-    `## LQ v2 Intake (v${VERSION})\nPOST /webhook/lq-v2-intake with header auth.\n\n1. Validate + score in JS (src/ modules, inlined).\n2. One RPC call: lq_v2_accept_batch commits contact, event, score, work item and notification intent in one transaction. Repeats of a source_event_id return the original outcome.\n3. Respond only after the commit: 202 / 207 / 400 / 409, or 503 if the database did not confirm.\n\nSlack is NOT called here. The dispatcher workflow delivers notifications.\nContract: docs/v2/event-contract.md`,
+    `## LQ v2 Intake (v${VERSION})\nPOST /webhook/lq-v2-intake with header auth.\n\n1. Validate + score in JS (src/ modules, inlined).\n2. One RPC call: lq_v2_accept_batch commits contact, event, score, work item and notification intent in one transaction. Repeats of a source_event_id return the original outcome.\n3. Respond only after the commit: 202 / 207 / 400 / 409, or 503 if the database answered with an error. If the database is unreachable the run fails and n8n answers 500; nothing was committed either way.\n\nSlack is NOT called here. The dispatcher workflow delivers notifications.\nContract: docs/v2/event-contract.md`,
     [-80, -320], 320);
 
   b.add('Intake Webhook', 'n8n-nodes-base.webhook', 2, [0, 0], {
@@ -178,8 +178,13 @@ function buildIntake(c) {
   });
 
   b.add('Accept Events (RPC)', 'n8n-nodes-base.httpRequest', 4.2, [660, -100],
-    rpcParams(c, 'lq_v2_accept_batch', '={{ JSON.stringify({ p_events: $json.events }) }}'),
-    { credentials: supabaseCred(c), onError: 'continueErrorOutput' });
+    {
+      ...rpcParams(c, 'lq_v2_accept_batch', '={{ JSON.stringify({ p_events: $json.events }) }}'),
+      // Any HTTP status reaches Build Response, which turns non-2xx into 503.
+      // No per-node onError: the n8n-workflow-builder MCP drops that field.
+      options: { timeout: 15000, response: { response: { fullResponse: true, neverError: true } } }
+    },
+    { credentials: supabaseCred(c) });
 
   b.add('Build Response', 'n8n-nodes-base.code', 2, [900, 0], {
     jsCode: [
@@ -188,12 +193,13 @@ function buildIntake(c) {
       '// ---- node ----',
       "const prep = $('Validate and Score').first().json;",
       'const db = $input.first().json;',
-      'return [{ json: buildIntakeResponse(prep.invalid, Array.isArray(db.results) ? db.results : []) }];'
-    ].join('\n')
-  });
-
-  b.add('Build Not Accepted Response', 'n8n-nodes-base.code', 2, [900, 200], {
-    jsCode: [
+      '// From the "no valid events" branch the input is the prep item itself.',
+      'if (db.statusCode === undefined) return [{ json: buildIntakeResponse(prep.invalid, []) }];',
+      "let body = db.body;",
+      "if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }",
+      'if (db.statusCode >= 200 && db.statusCode < 300 && body && Array.isArray(body.results)) {',
+      '  return [{ json: buildIntakeResponse(prep.invalid, body.results) }];',
+      '}',
       '// The database did not confirm acceptance. Nothing was committed, so the',
       '// sender must retry; retries are safe because acceptance is idempotent.',
       "return [{ json: { statusCode: 503, body: { status: 503, error: 'not_accepted', retry: true } } }];"
@@ -211,9 +217,7 @@ function buildIntake(c) {
   b.connect('Any Valid Events', 'Accept Events (RPC)', 0);
   b.connect('Any Valid Events', 'Build Response', 1);
   b.connect('Accept Events (RPC)', 'Build Response', 0);
-  b.connect('Accept Events (RPC)', 'Build Not Accepted Response', 1);
   b.connect('Build Response', 'Respond');
-  b.connect('Build Not Accepted Response', 'Respond');
 
   return { name, nodes: b.nodes, connections: b.connections, settings: settings(c), active: false, pinData: {}, meta: { lqVersion: VERSION } };
 }
@@ -222,7 +226,7 @@ function buildDispatcher(c) {
   const name = 'LQ v2 - Notification Dispatcher';
   const b = workflowBuilder(name);
   sticky(b, name,
-    `## LQ v2 Notification Dispatcher (v${VERSION})\nEvery minute:\n1. lq_v2_claim_notifications: expired leases -> uncertain; lease due pending rows; claim due uncertain rows for reconciliation.\n2. send: chat.postMessage with metadata {notification_id}. Result classified as sent / retryable / permanent / uncertain and recorded with the Slack receipt.\n3. reconcile: conversations.history searched by metadata. found -> sent. not found -> requeue. inconclusive -> retry, then operator.\n\nNo n8n auto-retry on the Slack call: retries are scheduled by the database so they stay bounded and visible.\nContract: docs/v2/delivery-contract.md`,
+    `## LQ v2 Notification Dispatcher (v${VERSION})\nEvery minute:\n1. lq_v2_claim_notifications: expired leases -> uncertain; lease due pending rows; claim due uncertain rows for reconciliation.\n2. send: chat.postMessage with metadata {notification_id}. Result classified as sent / retryable / permanent / uncertain and recorded with the Slack receipt.\n3. reconcile: conversations.history searched by metadata. found -> sent. not found -> requeue. inconclusive -> retry, then operator.\n\nIf a Slack call gets no response at all (timeout, network), the run fails, ops is alerted, and the lease expiry marks the row uncertain so reconciliation decides. No n8n auto-retry: retries are scheduled by the database.\nContract: docs/v2/delivery-contract.md`,
     [-80, -360], 340);
 
   b.add('Every Minute', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], {
@@ -257,7 +261,7 @@ function buildDispatcher(c) {
     sendBody: true,
     specifyBody: 'json',
     jsonBody: "={{ JSON.stringify({ channel: $json.channel, text: $json.text, unfurl_links: false, unfurl_media: false, metadata: { event_type: 'lq_v2_notification', event_payload: { notification_id: $json.notification_id, correlation_id: $json.correlation_id } } }) }}"
-  }), { credentials: slackCred(c), onError: 'continueErrorOutput' });
+  }), { credentials: slackCred(c) });
 
   const notify = bundle('notify.js');
   const recordFrom = (resultExpr) => [
@@ -266,9 +270,7 @@ function buildDispatcher(c) {
     '// ---- node ----',
     "const claim = $('Split Claims').item.json;",
     `const result = ${resultExpr};`,
-    // Error-output items carry the input claim plus `error`; store and classify
-    // only the error so lead-supplied text can never influence the outcome.
-    "const raw = $json.body !== undefined ? $json.body : { error: $json.error || null };",
+    'const raw = $json.body;',
     "const provider_response = raw && typeof raw === 'object' ? raw : { raw: String(raw).slice(0, 2000) };",
     'return { json: { p_notification_id: claim.notification_id, p_attempt_no: claim.attempt_no, p_result: { ...result, provider_response } } };'
   ].join('\n');
@@ -276,10 +278,6 @@ function buildDispatcher(c) {
   b.add('Classify Send Result', 'n8n-nodes-base.code', 2, [1140, -240], {
     mode: 'runOnceForEachItem',
     jsCode: recordFrom('classifySendResponse({ statusCode: $json.statusCode, body: $json.body })')
-  });
-  b.add('Classify Send Error', 'n8n-nodes-base.code', 2, [1140, -80], {
-    mode: 'runOnceForEachItem',
-    jsCode: recordFrom("classifySendResponse({ error: $json.error || 'unknown error' })")
   });
   b.add('Record Send Result (RPC)', 'n8n-nodes-base.httpRequest', 4.2, [1380, -160],
     rpcParams(c, 'lq_v2_record_send_result', '={{ JSON.stringify($json) }}'),
@@ -296,16 +294,11 @@ function buildDispatcher(c) {
         { name: 'limit', value: '200' }
       ]
     }
-  }), { credentials: slackCred(c), onError: 'continueErrorOutput' });
+  }), { credentials: slackCred(c) });
 
-  const reconcileFrom = (resultExpr) => recordFrom(resultExpr);
   b.add('Classify Reconcile Result', 'n8n-nodes-base.code', 2, [1140, 80], {
     mode: 'runOnceForEachItem',
-    jsCode: reconcileFrom('findReconciledMessage({ statusCode: $json.statusCode, body: $json.body }, claim.notification_id)')
-  });
-  b.add('Classify Reconcile Error', 'n8n-nodes-base.code', 2, [1140, 240], {
-    mode: 'runOnceForEachItem',
-    jsCode: reconcileFrom("findReconciledMessage({ error: $json.error || 'unknown error' }, claim.notification_id)")
+    jsCode: recordFrom('findReconciledMessage({ statusCode: $json.statusCode, body: $json.body }, claim.notification_id)')
   });
   b.add('Record Reconcile Result (RPC)', 'n8n-nodes-base.httpRequest', 4.2, [1380, 160],
     rpcParams(c, 'lq_v2_record_reconcile_result', '={{ JSON.stringify($json) }}'),
@@ -330,13 +323,9 @@ function buildDispatcher(c) {
   b.connect('Send or Reconcile', 'Slack chat.postMessage', 0);
   b.connect('Send or Reconcile', 'Slack conversations.history', 1);
   b.connect('Slack chat.postMessage', 'Classify Send Result', 0);
-  b.connect('Slack chat.postMessage', 'Classify Send Error', 1);
   b.connect('Classify Send Result', 'Record Send Result (RPC)');
-  b.connect('Classify Send Error', 'Record Send Result (RPC)');
   b.connect('Slack conversations.history', 'Classify Reconcile Result', 0);
-  b.connect('Slack conversations.history', 'Classify Reconcile Error', 1);
   b.connect('Classify Reconcile Result', 'Record Reconcile Result (RPC)');
-  b.connect('Classify Reconcile Error', 'Record Reconcile Result (RPC)');
   b.connect('Record Send Result (RPC)', 'Raise Operator Alert');
   b.connect('Record Reconcile Result (RPC)', 'Raise Operator Alert');
 
@@ -391,11 +380,12 @@ function buildErrorHandler(c) {
     sendBody: true,
     specifyBody: 'json',
     jsonBody: `={{ JSON.stringify({ channel: ${JSON.stringify(c.LQ_V2_SLACK_OPS_CHANNEL_ID)}, text: $json.slack_text, unfurl_links: false }) }}`,
-    options: { timeout: 10000 }
-  }, { credentials: slackCred(c), onError: 'continueRegularOutput' });
+    // neverError: an HTTP failure here must not stop the database log branch.
+    options: { timeout: 10000, response: { response: { neverError: true } } }
+  }, { credentials: slackCred(c) });
   b.add('Log Error (RPC)', 'n8n-nodes-base.httpRequest', 4.2, [460, 100],
-    rpcParams(c, 'lq_v2_log_workflow_error', '={{ JSON.stringify({ p_error: $json }) }}'),
-    { credentials: supabaseCred(c), onError: 'continueRegularOutput' });
+    { ...rpcParams(c, 'lq_v2_log_workflow_error', '={{ JSON.stringify({ p_error: $json }) }}'), options: { timeout: 15000, response: { response: { neverError: true } } } },
+    { credentials: supabaseCred(c) });
 
   b.connect('Error Trigger', 'Describe Error');
   b.connect('Describe Error', 'Slack Ops Alert');

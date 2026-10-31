@@ -13,14 +13,14 @@ Different webhook paths alone do not make resources isolated. These are the actu
 | Database | New dedicated Supabase project, schema `lq_v2` | Migration 001 refuses to install if `public.leads/scores/actions/nurture_queue` exist. The build refuses the v1 project URL. |
 | Database access | Only `public.lq_v2_*` functions, `service_role` only | Grants and RLS in the migrations (tested) |
 | n8n workflows | `LQ v2 - Intake`, `LQ v2 - Notification Dispatcher`, `LQ v2 - Error Handler`. Exported inactive. | Tests assert `active: false` and no v1 references |
-| Webhook | `/webhook/lq-v2-intake`, header token required | Webhook Header Auth (tested on local n8n 2.14.2) |
+| Webhook | `/webhook/lq-v2-intake`, header token required | Webhook Header Auth (tested on local n8n 2.14.2 and 2.38.7) |
 | Credentials | Three new credentials. None of the v1 credential IDs. | Tests reject known v1 credential IDs in exports |
 | Slack | New channel. Ideally a new bot token. | Channel ID set at build time. Reusing an existing bot token isolates the channel, not the token. |
 | n8n instance | **Shared** with the 46 active workflows | Not isolated. v2 adds one schedule per minute and low webhook volume. |
 
 ## Before deployment: decisions and approvals
 
-1. **Confirm the n8n version.** Exports were built and tested on n8n **2.14.2**, the version in my notes from 2026-03-30. If the Render instance now runs another version, re-run the local e2e suite against that image (`LQ_V2_E2E_N8N_IMAGE=n8nio/n8n:<version>`) before importing.
+1. **n8n version: 2.38.7 (confirmed).** The full local e2e suite passes on `n8nio/n8n:2.38.7`. For a future upgrade, rerun it with `LQ_V2_E2E_N8N_IMAGE=n8nio/n8n:<version>` first.
 2. **[approval]** Create a dedicated Supabase project for v2.
 3. **[approval]** Create a Slack channel for v2, and a bot token with `chat:write` plus `channels:history` (public channel) or `groups:history` (private channel). Invite the bot to the channel.
 4. **[approval]** Create three credentials on the n8n instance.
@@ -46,11 +46,11 @@ Create the channel, install the bot, invite it to the channel, and note the chan
 
 ### 3. n8n credentials [approval]
 
-| Name (suggested) | Type | Content |
-|---|---|---|
-| LQ v2 Supabase Service Role | Multiple Headers Auth | Same header pattern as the existing v1 Supabase credential, using the **new** project's service key (`apikey`, plus `Authorization: Bearer` for a legacy JWT key) |
-| LQ v2 Slack Bot | Header Auth | `Authorization` = `Bearer xoxb-...` |
-| LQ v2 Intake Webhook Token | Header Auth | `X-LQ-Webhook-Token` = a long random value. Share it only with the sender. |
+| Name (suggested)            | Type                  | Content                                                                                                                                                           |
+| --------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LQ v2 Supabase Service Role | Multiple Headers Auth | One header: `apikey` = the new project's secret key (`sb_secret_...`). Do **not** add `Authorization`: a non-JWT there fails with `401 PGRST301 Expected 3 parts in JWT`. Only with a legacy `service_role` JWT may you also send `Authorization: Bearer <jwt>`. |
+| LQ v2 Slack Bot             | Header Auth           | `Authorization` = `Bearer xoxb-...`                                                                                                                               |
+| LQ v2 Intake Webhook Token  | Header Auth           | `X-LQ-Webhook-Token` = a long random value. Share it only with the sender.                                                                                        |
 
 Record each credential's ID. On this instance, import binds credentials only by exact ID (my notes, 2026-03-30). The method that has worked is reading `id, name, type` from the `credentials_entity` table of the n8n database.
 
@@ -64,7 +64,16 @@ node scripts/build-workflows.js --env-file .env.lq-v2.local --out dist
 
 `dist/` is gitignored. The build fails on missing values, placeholders, the v1 database URL or malformed channel IDs.
 
-### 5. Import [approval]
+### 5. Import or update [approval]
+
+**Updating through the n8n-workflow-builder MCP (the path used on Render).** Its `update_workflow` keeps nodes, parameters, credentials and connections, and republishes an active workflow. It silently drops per-node `onError` and cannot set workflow settings. The workflows are built not to depend on `onError` (a test enforces this). Set these two settings by hand in each workflow's Settings:
+
+| Workflow | Error workflow | Save successful production executions |
+|---|---|---|
+| LQ v2 - Intake | LQ v2 - Error Handler | default |
+| LQ v2 - Notification Dispatcher | LQ v2 - Error Handler | Do not save |
+
+**Importing files:**
 
 1. Import `dist/lq-v2-error-handler.json`. Note its workflow ID (it appears in the editor URL, `/workflow/<id>`).
 2. Set `LQ_V2_ERROR_WORKFLOW_ID` in `.env.lq-v2.local`, rebuild, then import `dist/lq-v2-intake.json` and `dist/lq-v2-notification-dispatcher.json`.

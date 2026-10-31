@@ -45,7 +45,7 @@ Rules the database enforces:
 
 - Send: `POST https://slack.com/api/chat.postMessage` with `channel`, `text`, `unfurl_links: false`, and `metadata: {event_type: "lq_v2_notification", event_payload: {notification_id, correlation_id}}`.
 - Reconcile: `GET conversations.history?channel=...&oldest=<first attempt - 60s>&include_all_metadata=true&limit=200`, then match `metadata.event_payload.notification_id`. If `has_more` is true and no match is found, the result is inconclusive rather than "not found".
-- The HTTP node uses full response plus never-error, so the classifier sees every Slack answer. Network failures go to the node's error output. Only the `error` field of that item is classified. The n8n item also carries the claim, including lead-supplied text, and that text must not influence the outcome.
+- The HTTP node uses full response plus never-error, so the classifier sees every Slack answer, including 4xx and 5xx. If no answer arrives at all (timeout, DNS, reset), the dispatcher run fails, the error workflow alerts ops, and the claimed row keeps its lease. When the lease expires (120 s) it becomes `uncertain` and reconciliation decides. There is deliberately no per-node `onError` branch, because the n8n-workflow-builder MCP drops that setting.
 - n8n's auto-retry is off on Slack calls. All retries are scheduled by the database, so they are bounded and visible.
 - Correlation id: `lqv2:<source>:<source_event_id>`. It appears in the message text (`*Ref:*`), in Slack metadata, and in `lq_v2.notifications`.
 
@@ -58,8 +58,7 @@ Classification (`src/notify.js`):
 | `ok: false` with `ratelimited` / `service_unavailable`, or HTTP 429 | `retryable_failure` |
 | `ok: false` with `internal_error` / `fatal_error` / `request_timeout`, or HTTP 5xx | `uncertain` |
 | Any other `ok: false` (e.g. `channel_not_found`, `invalid_auth`, `not_in_channel`), or other 4xx | `permanent_failure` |
-| Connection refused or DNS failure (request never sent) | `retryable_failure` |
-| Timeout, reset, or any other network error | `uncertain` |
+| No answer at all (timeout, refused, DNS, reset) | run fails and alerts; lease expiry makes it `uncertain`; reconciliation decides |
 
 ## Visibility
 

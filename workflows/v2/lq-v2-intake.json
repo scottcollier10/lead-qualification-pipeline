@@ -11,7 +11,7 @@
         -320
       ],
       "parameters": {
-        "content": "## LQ v2 Intake (v2.0.0)\nPOST /webhook/lq-v2-intake with header auth.\n\n1. Validate + score in JS (src/ modules, inlined).\n2. One RPC call: lq_v2_accept_batch commits contact, event, score, work item and notification intent in one transaction. Repeats of a source_event_id return the original outcome.\n3. Respond only after the commit: 202 / 207 / 400 / 409, or 503 if the database did not confirm.\n\nSlack is NOT called here. The dispatcher workflow delivers notifications.\nContract: docs/v2/event-contract.md",
+        "content": "## LQ v2 Intake (v2.0.0)\nPOST /webhook/lq-v2-intake with header auth.\n\n1. Validate + score in JS (src/ modules, inlined).\n2. One RPC call: lq_v2_accept_batch commits contact, event, score, work item and notification intent in one transaction. Repeats of a source_event_id return the original outcome.\n3. Respond only after the commit: 202 / 207 / 400 / 409, or 503 if the database answered with an error. If the database is unreachable the run fails and n8n answers 500; nothing was committed either way.\n\nSlack is NOT called here. The dispatcher workflow delivers notifications.\nContract: docs/v2/event-contract.md",
         "height": 320,
         "width": 420
       }
@@ -112,7 +112,13 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ p_events: $json.events }) }}",
         "options": {
-          "timeout": 15000
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
         }
       },
       "credentials": {
@@ -120,8 +126,7 @@
           "id": "__LQ_V2_CRED_SUPABASE_ID__",
           "name": "__LQ_V2_CRED_SUPABASE_NAME__"
         }
-      },
-      "onError": "continueErrorOutput"
+      }
     },
     {
       "id": "a6eeb658-14cb-4bbb-a082-efef5e224297",
@@ -133,20 +138,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "// ---- src/response.js ----\n// Builds the intake HTTP response from validation rejects and database results.\n// Status rules (docs/v2/event-contract.md):\n//   202 every event accepted or duplicate\n//   400 nothing accepted, all invalid/rejected\n//   409 nothing accepted, all conflicts (event id reused with different payload)\n//   207 mixed\n//   503 database did not confirm acceptance (built separately in the workflow)\n\nfunction buildIntakeResponse(invalid, dbResults) {\n  const results = [\n    ...invalid.map((r) => ({ index: r.index, source_event_id: r.source_event_id, outcome: 'invalid', errors: r.errors })),\n    ...(dbResults || [])\n  ].sort((a, b) => (a.index === null ? -1 : b.index === null ? 1 : a.index - b.index));\n\n  const ok = results.filter((r) => r.outcome === 'accepted' || r.outcome === 'duplicate').length;\n  const bad = results.length - ok;\n  let statusCode;\n  if (bad === 0) statusCode = 202;\n  else if (ok > 0) statusCode = 207;\n  else if (results.every((r) => r.outcome === 'conflict')) statusCode = 409;\n  else statusCode = 400;\n\n  return { statusCode, body: { status: statusCode, results } };\n}\n\n// ---- node ----\nconst prep = $('Validate and Score').first().json;\nconst db = $input.first().json;\nreturn [{ json: buildIntakeResponse(prep.invalid, Array.isArray(db.results) ? db.results : []) }];"
-      }
-    },
-    {
-      "id": "9a8e3d77-5b4f-4394-a253-690212c9ed65",
-      "name": "Build Not Accepted Response",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        900,
-        200
-      ],
-      "parameters": {
-        "jsCode": "// The database did not confirm acceptance. Nothing was committed, so the\n// sender must retry; retries are safe because acceptance is idempotent.\nreturn [{ json: { statusCode: 503, body: { status: 503, error: 'not_accepted', retry: true } } }];"
+        "jsCode": "// ---- src/response.js ----\n// Builds the intake HTTP response from validation rejects and database results.\n// Status rules (docs/v2/event-contract.md):\n//   202 every event accepted or duplicate\n//   400 nothing accepted, all invalid/rejected\n//   409 nothing accepted, all conflicts (event id reused with different payload)\n//   207 mixed\n//   503 database did not confirm acceptance (built separately in the workflow)\n\nfunction buildIntakeResponse(invalid, dbResults) {\n  const results = [\n    ...invalid.map((r) => ({ index: r.index, source_event_id: r.source_event_id, outcome: 'invalid', errors: r.errors })),\n    ...(dbResults || [])\n  ].sort((a, b) => (a.index === null ? -1 : b.index === null ? 1 : a.index - b.index));\n\n  const ok = results.filter((r) => r.outcome === 'accepted' || r.outcome === 'duplicate').length;\n  const bad = results.length - ok;\n  let statusCode;\n  if (bad === 0) statusCode = 202;\n  else if (ok > 0) statusCode = 207;\n  else if (results.every((r) => r.outcome === 'conflict')) statusCode = 409;\n  else statusCode = 400;\n\n  return { statusCode, body: { status: statusCode, results } };\n}\n\n// ---- node ----\nconst prep = $('Validate and Score').first().json;\nconst db = $input.first().json;\n// From the \"no valid events\" branch the input is the prep item itself.\nif (db.statusCode === undefined) return [{ json: buildIntakeResponse(prep.invalid, []) }];\nlet body = db.body;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = null; } }\nif (db.statusCode >= 200 && db.statusCode < 300 && body && Array.isArray(body.results)) {\n  return [{ json: buildIntakeResponse(prep.invalid, body.results) }];\n}\n// The database did not confirm acceptance. Nothing was committed, so the\n// sender must retry; retries are safe because acceptance is idempotent.\nreturn [{ json: { statusCode: 503, body: { status: 503, error: 'not_accepted', retry: true } } }];"
       }
     },
     {
@@ -216,28 +208,10 @@
             "type": "main",
             "index": 0
           }
-        ],
-        [
-          {
-            "node": "Build Not Accepted Response",
-            "type": "main",
-            "index": 0
-          }
         ]
       ]
     },
     "Build Response": {
-      "main": [
-        [
-          {
-            "node": "Respond",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Build Not Accepted Response": {
       "main": [
         [
           {

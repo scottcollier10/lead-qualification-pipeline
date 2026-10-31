@@ -8,7 +8,7 @@ Run date: 2026-10-30. Branch `feat/lq-v2-reliable-pipeline`. **98 automated test
 |---|---|
 | **Unit** | Pure JS in Node 22. No I/O. |
 | **DB** | Real PostgreSQL in Docker (`supabase/postgres:17.6.1.132`, the same image Supabase hosts, with the same roles). The real migrations and functions. |
-| **n8n** | The built v2 workflows imported and activated in a throwaway local **n8n 2.14.2** container, called over HTTP. Real PostgREST v14.1 and Postgres. |
+| **n8n** | The built v2 workflows imported and activated in throwaway local **n8n 2.14.2 and 2.38.7** containers (12/12 on each; 2.38.7 is the Render version), called over HTTP. Real PostgREST v14.1 and Postgres. |
 | **Simulated** | Slack, and in E7 the database outage, are fakes with failure injection. They model documented behavior. They are not the real service. |
 
 | Suite | Command | Tests | Result |
@@ -35,7 +35,7 @@ Unit + workflow + DB = 86 tests (`npm test`). The e2e suite adds 12. The parity 
 | 8 | Slack success, receipt persistence fails | **Pass** | DB D5, D9, e2e E9 | Row held in `sending`, then `uncertain` when the lease expires. Reconciliation finds the message: `sent (reconciled)`, still exactly one message. The error workflow posted an ops alert and logged `last_node = Record Send Result (RPC)`. A late receipt is still recorded (D9). **Slack and the receipt-write failure simulated.** |
 | 9 | Database failure and recovery | **Pass** | DB 9, e2e E7 | Backend killed mid-transaction: nothing persisted, retry accepted exactly once (real Postgres termination). Unreachable database: the call fails, so there is no success response. Through n8n: 503 `not_accepted`, nothing written, retry accepted (outage **simulated** at the proxy in front of PostgREST). |
 | 10 | Repeated execution without broad cleanup | **Pass** | DB 10, all suites | Every fixture uses a unique run tag. The DB and e2e suites were run repeatedly against the same database with no cleanup. The purge removes only its own run and refuses empty or wildcard tags. |
-| Timeouts | Slack timeout or 5xx | **Pass** | DB D6, D7, e2e E10, E11 | A real 10 s n8n timeout classified `uncertain`, reconciled as absent, resent once (E10). 500 after posting: reconciled as delivered, never resent (E11). **Slack simulated.** |
+| Timeouts | Slack timeout or 5xx | **Pass** | DB D6, D7, e2e E10, E11 | A real 10 s n8n timeout fails the dispatcher run and alerts ops; lease expiry makes it `uncertain`; reconciled as absent; resent once (E10). 500 after posting: reconciled as delivered, never resent (E11). **Slack simulated.** |
 | Ledger | Persisted-state reconciliation | **Pass** | DB ledger test | `lq_v2.event_ledger` ties contact, event, scoring input, score version, route, work item, delivery state and receipt. |
 | Isolation | No install next to v1 | **Pass** | DB 11, workflow tests | Migration refuses a database containing `public.leads`. The build refuses the v1 URL. Exports contain no v1 URL, webhook path, Slack user or credential IDs. The original exports' checksums are unchanged. |
 
@@ -46,14 +46,14 @@ Unit + workflow + DB = 86 tests (`npm test`). The e2e suite adds 12. The parity 
 3. **Execution volume.** A per-minute dispatcher saving all executions would add about 1,440 runs a day to n8n's SQLite. Fix: the dispatcher keeps failed executions only.
 4. **Duplicate delivery missed on the reconcile path** (independent code review). A stale reconcile lookup that found a different message for an already-sent notification changed nothing. Fix: flag `operator_required`, same as the send path. Regression test D13.
 5. A test-only bug: email lookup in the DB helper was case-sensitive.
+6. **Deployment through the n8n-workflow-builder MCP drops per-node `onError`.** The workflows no longer use it: the RPC and Slack calls use never-error responses, and network failures fall back to the error workflow plus lease recovery. A test now fails if any node uses `onError`. This also supersedes fix 1, since error-output items are no longer classified.
 
-Observed n8n behavior that the design now depends on (verified on 2.14.2): a webhook with Header Auth returns 403 before the workflow runs; malformed JSON returns 422; `Respond to Webhook` honors an expression response code; HTTP 4.2 `neverError` + `fullResponse` exposes status and body; `continueErrorOutput` routes network errors to output 2; `$('Split Claims').item` pairs correctly through IF and HTTP nodes; a timeout appears as `NodeApiError` "The connection was aborted, perhaps the server is offline" with no error code.
+Observed n8n behavior that the design now depends on (verified on 2.14.2): a webhook with Header Auth returns 403 before the workflow runs; malformed JSON returns 422; `Respond to Webhook` honors an expression response code; HTTP 4.2 `neverError` + `fullResponse` exposes status and body; `$('Split Claims').item` pairs correctly through IF and HTTP nodes; a timeout appears as `NodeApiError` "The connection was aborted, perhaps the server is offline" with no error code.
 
 ## Unverified until live (needs approval)
 
 | Item | Why it matters | How to verify |
 |---|---|---|
-| n8n version on Render | Exports are tested on 2.14.2 only | Confirm the version. If it differs, rerun e2e on that image. |
 | Import and credential binding on the Render instance | Known 2.14.2 import bug | Deployment step 5 check |
 | Hosted Supabase API gateway and key format | Local tests used PostgREST directly with a service_role JWT, not Supabase's gateway or new `sb_secret` keys | Smoke test step 1 |
 | **Real Slack metadata round trip** | Reconciliation needs `chat.postMessage` metadata to come back from `conversations.history` with `include_all_metadata=true` | Smoke test, then force one reconcile (expire a lease in SQL) and confirm `resolution = reconciled` |
@@ -71,6 +71,7 @@ npm install
 npm run db:up            # local Supabase Postgres in Docker, applies migrations
 npm test                 # unit + workflow + DB
 npm run e2e:up           # local n8n 2.14.2 + PostgREST + fake Slack
+                         # (LQ_V2_E2E_N8N_IMAGE=n8nio/n8n:2.38.7 for the Render version)
 npm run test:e2e
 npm run e2e:down && npm run db:down
 ```

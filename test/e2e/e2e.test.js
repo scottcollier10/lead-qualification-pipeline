@@ -198,19 +198,26 @@ test('E9. Slack accepted, receipt write failed: error alert raised, later reconc
   assert.equal(slackCount(await cloud(), id), 1);
 });
 
-test('E10. Slack timeout before posting: uncertain, reconciled as absent, resent once', async () => {
+test('E10. Slack timeout before posting: run fails and alerts, lease expiry -> uncertain, reconciled as absent, resent once', async () => {
   const run = newRunTag();
+  const { rows: errBefore } = await pool.query('select coalesce(max(id), 0)::int as id from lq_v2.workflow_errors');
   await ctl({ plan: ['hang_before_post'] });
   const res = (await post(lead(run, 'hot', PROFILES.highFit))).json.results[0];
   const cid = res.notification.correlation_id;
-  await waitFor(async () => (await notif(cid)).status === 'uncertain', 60000);
-  await pool.query('update lq_v2.notifications set next_reconcile_at = now() where correlation_id = $1', [cid]); // skip 60s wait
+  // No response from Slack: the dispatcher run fails and the error workflow alerts.
+  const err = await waitFor(async () => {
+    const { rows } = await pool.query('select * from lq_v2.workflow_errors where id > $1 and last_node = $2', [errBefore[0].id, 'Slack chat.postMessage']);
+    return rows[0];
+  }, 60000);
+  assert.equal(err.workflow_name, 'LQ v2 - Notification Dispatcher');
+  assert.equal((await notif(cid)).status, 'sending');
+  await pool.query(`update lq_v2.notifications set lease_expires_at = now() - interval '1 second' where correlation_id = $1`, [cid]); // skip 120s lease
   const n = await waitFor(sendStatus(cid), 60000);
   assert.equal(n.resolution, 'provider_ack');
   assert.equal(slackCount(await cloud(), res.notification.id), 1);
   const { rows } = await pool.query(
     `select kind || '#' || attempt_no || ':' || outcome as a from lq_v2.delivery_attempts where notification_id = $1 order by id`, [n.id]);
-  assert.deepEqual(rows.map((r) => r.a), ['send#1:uncertain', 'reconcile#1:not_found', 'send#2:sent']);
+  assert.deepEqual(rows.map((r) => r.a), ['send#1:lease_expired', 'reconcile#1:not_found', 'send#2:sent']);
 });
 
 test('E11. Slack 500 after posting: uncertain, reconciled as delivered, never resent', async () => {

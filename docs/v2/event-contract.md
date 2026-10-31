@@ -60,7 +60,8 @@ That example scores fit 100, urgency 65, route `call_now`.
 | 409 | Nothing accepted: every event is a `conflict`. | The event id was reused for different content. Use a new id. |
 | 403 | Missing or wrong webhook token (from n8n). No workflow run. | Fix the token. |
 | 422 | Body is not valid JSON (from n8n). No workflow run. | Fix the body. |
-| 503 | Database did not confirm. Nothing committed. | Retry with the same ids. Safe. |
+| 503 | Database answered with an error. Nothing committed. | Retry with the same ids. Safe. |
+| 500 | Database unreachable, so the workflow run failed (from n8n). Nothing confirmed. | Retry with the same ids. Safe. |
 
 Body: `{ "status": <code>, "results": [ ... ] }`, sorted by `index`. Per-event outcomes:
 

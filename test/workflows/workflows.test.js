@@ -66,6 +66,12 @@ for (const f of files) {
       assert.ok(!text.includes(legacy), `${f} references legacy ${legacy}`);
     }
     assert.ok(!/xoxb-|eyJhbGci|sk-ant-/.test(text), 'no secrets');
+    // The n8n-workflow-builder MCP drops per-node onError/continueOnFail, so
+    // the workflows must not depend on them.
+    for (const n of wf.nodes) {
+      assert.equal(n.onError, undefined, `${n.name} uses onError`);
+      assert.equal(n.continueOnFail, undefined, `${n.name} uses continueOnFail`);
+    }
     for (const n of wf.nodes.filter((n) => n.type === 'n8n-nodes-base.code')) {
       assert.doesNotThrow(() => new Function('$input', '$json', '$', n.parameters.jsCode), n.name);
     }
@@ -81,8 +87,8 @@ test('intake: new authenticated webhook path, responds only via Respond node', (
   assert.ok(hook.credentials.httpHeaderAuth);
   assert.ok(!JSON.stringify(wf).includes('chat.postMessage'), 'intake never calls Slack');
   const rpc = wf.nodes.find((n) => n.name === 'Accept Events (RPC)');
-  assert.equal(rpc.onError, 'continueErrorOutput');
-  assert.equal(wf.connections['Accept Events (RPC)'].main[1][0].node, 'Build Not Accepted Response');
+  assert.equal(rpc.parameters.options.response.response.neverError, true);
+  assert.equal(wf.connections['Accept Events (RPC)'].main[0][0].node, 'Build Response');
 });
 
 test('intake Code nodes produce the same payloads as the tested modules', () => {
@@ -96,22 +102,24 @@ test('intake Code nodes produce the same payloads as the tested modules', () => 
     $input: { first: () => ({ json: input }) },
     $: () => ({ first: () => ({ json: prep }) })
   })[0].json;
-  const mixed = respond({ results: [{ index: 0, outcome: 'accepted' }] });
+  const mixed = respond({ statusCode: 200, body: { results: [{ index: 0, outcome: 'accepted' }] } });
   assert.equal(mixed.statusCode, 207);
+  assert.equal(respond({ statusCode: 200, body: '{"results":[{"index":0,"outcome":"accepted"}]}' }).statusCode, 207);
   assert.equal(respond(prep).statusCode, 400); // IF false branch passes the prep item through
-  const na = runCode(codeOf(wf, 'Build Not Accepted Response'), {})[0].json;
-  assert.equal(na.statusCode, 503);
+  for (const failed of [{ statusCode: 503, body: { message: 'down' } }, { statusCode: 401, body: {} }, { statusCode: 200, body: 'garbage' }]) {
+    assert.deepEqual(respond(failed), { statusCode: 503, body: { status: 503, error: 'not_accepted', retry: true } });
+  }
 });
 
-test('dispatcher: Slack send has no n8n auto-retry and routes network errors to classification', () => {
+test('dispatcher: Slack send has no n8n auto-retry; every HTTP answer reaches classification', () => {
   const wf = load('lq-v2-notification-dispatcher.json');
   const send = wf.nodes.find((n) => n.name === 'Slack chat.postMessage');
   assert.notEqual(send.retryOnFail, true);
-  assert.equal(send.onError, 'continueErrorOutput');
   assert.equal(send.parameters.options.response.response.neverError, true);
   assert.equal(send.parameters.url, 'https://slack.com/api/chat.postMessage');
   assert.match(send.parameters.jsonBody, /lq_v2_notification/);
-  assert.equal(wf.connections['Slack chat.postMessage'].main[1][0].node, 'Classify Send Error');
+  assert.equal(wf.connections['Slack chat.postMessage'].main.length, 1);
+  assert.equal(wf.connections['Slack chat.postMessage'].main[0][0].node, 'Classify Send Result');
   assert.equal(wf.settings.saveDataSuccessExecution, 'none');
   assert.equal(wf.settings.saveDataErrorExecution, 'all');
 });
@@ -129,17 +137,9 @@ test('dispatcher Code nodes build RPC arguments from paired claims', () => {
     { ...ok, p_result: { ...ok.p_result, provider_response: undefined } },
     { p_notification_id: 'n1', p_attempt_no: 2, p_result: { outcome: 'sent', message_ts: '1.1', provider_channel: 'C1', http_status: 200, provider_response: undefined } }
   );
-  const err = runCode(codeOf(wf, 'Classify Send Error'), { ...paired, $json: { error: 'connect ECONNREFUSED 1.1.1.1:443' } }).json;
-  assert.equal(err.p_result.outcome, 'retryable_failure');
-  const timeout = runCode(codeOf(wf, 'Classify Send Error'), { ...paired, $json: { error: 'timeout of 10000ms exceeded' } }).json;
-  assert.equal(timeout.p_result.outcome, 'uncertain');
-  // n8n error items include the input claim; lead text must not affect the outcome.
-  const injected = runCode(codeOf(wf, 'Classify Send Error'), {
-    ...paired,
-    $json: { ...claim, text: 'Company: ECONNREFUSED refused the connection', error: { message: 'The connection was aborted, perhaps the server is offline' } }
-  }).json;
-  assert.equal(injected.p_result.outcome, 'uncertain');
-  assert.ok(!JSON.stringify(injected.p_result.provider_response).includes('Company'));
+  const s500 = runCode(codeOf(wf, 'Classify Send Result'), { ...paired, $json: { statusCode: 500, body: 'oops' } }).json;
+  assert.equal(s500.p_result.outcome, 'uncertain');
+  assert.deepEqual(s500.p_result.provider_response, { raw: 'oops' });
 
   const rclaim = { ...claim, mode: 'reconcile' };
   const found = runCode(codeOf(wf, 'Classify Reconcile Result'), {
@@ -172,7 +172,7 @@ test('error handler reads the documented error payload', () => {
   assert.equal(out.error_message, 'boom <!channel>');
   assert.match(out.slack_text, /boom &lt;!channel&gt;/);
   for (const n of ['Slack Ops Alert', 'Log Error (RPC)']) {
-    assert.equal(wf.nodes.find((x) => x.name === n).onError, 'continueRegularOutput');
+    assert.equal(wf.nodes.find((x) => x.name === n).parameters.options.response.response.neverError, true);
   }
 });
 
