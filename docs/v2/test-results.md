@@ -50,17 +50,20 @@ Unit + workflow + DB = 86 tests (`npm test`). The e2e suite adds 12. The parity 
 
 Observed n8n behavior that the design now depends on (verified on 2.14.2): a webhook with Header Auth returns 403 before the workflow runs; malformed JSON returns 422; `Respond to Webhook` honors an expression response code; HTTP 4.2 `neverError` + `fullResponse` exposes status and body; `$('Split Claims').item` pairs correctly through IF and HTTP nodes; a timeout appears as `NodeApiError` "The connection was aborted, perhaps the server is offline" with no error code.
 
-## Unverified until live (needs approval)
+## Live verification (2026-10-31, Render n8n 2.38.7 + Supabase "Lead Qualifier Pro" + Slack)
 
-| Item | Why it matters | How to verify |
+| Item | Result | Evidence |
 |---|---|---|
-| Import and credential binding on the Render instance | Known 2.14.2 import bug | Deployment step 5 check |
-| Hosted Supabase API gateway and key format | Local tests used PostgREST directly with a service_role JWT, not Supabase's gateway or new `sb_secret` keys | Smoke test step 1 |
-| **Real Slack metadata round trip** | Reconciliation needs `chat.postMessage` metadata to come back from `conversations.history` with `include_all_metadata=true` | Smoke test, then force one reconcile (expire a lease in SQL) and confirm `resolution = reconciled` |
-| Real Slack scopes and error codes | Classification of real `ok:false` errors | Smoke test. Optionally post once with the bot removed from the channel. |
-| Webhook auth and latency behind Render's proxy, cold start | Sender timeouts | Smoke test steps 1 and 5 |
-| Error workflow assignment on Render | Ops alerting | Deactivate Slack credential briefly, or trigger the E9 path |
-| Load beyond small concurrency | Not demonstrated | Out of scope for the demo |
+| Hosted Supabase API and key | **Pass** | `apikey` header only (secret key). An `Authorization` header holding a non-JWT fails with 401 PGRST301. |
+| Credential binding after MCP update | **Pass** | All RPC and Slack nodes resolve their credentials |
+| Webhook header auth on Render | **Pass** | Correct token accepted; missing token 403 before any execution |
+| Intake: new hot lead, duplicate, returning contact, invalid input | **Pass** | Smoke run `smoke1793421159`: 202 accepted (fit 100 / urgency 65), 202 duplicate with original ids, 202 returning (touch_count 2, no notification), 400 |
+| Real Slack permanent error | **Pass** | `not_in_channel` classified permanent: one attempt, `failed`, operator flag, error workflow logged `Raise Operator Alert` |
+| Real Slack delivery | **Pass** | Smoke run `smoke1793504469`: `sent`, `provider_ack`, Slack ts `1793504477.477149` stored, first attempt |
+| **Slack metadata round trip / reconciliation** | **Pass** | Row forced to `uncertain`; next dispatcher run found the same ts in `conversations.history` via metadata: `sent (reconciled)`, no second message |
+| Narrow purge | **Pass** | `lq_v2_purge_synthetic_run('smoke1793421159')` removed 2 events, 1 contact, nothing else |
+
+Still open: an ops alert reaching the ops channel after the bot was invited (the only alert so far fired before the invite), behavior under load, and Render free-tier sleep latency.
 
 Out of scope by decision: HubSpot intake and signature verification (synthetic intake uses a shared header token), CRM writeback, AI scoring, enrichment, Slack buttons, nurture email sending.
 
