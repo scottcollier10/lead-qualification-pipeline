@@ -59,7 +59,15 @@ Observed n8n behavior that the design now depends on (verified on 2.14.2): a web
 | A malformed Slack channel turned every hot lead into a permanent 400 | Treated as a deployment error: whole request aborts, 503, ops alerted; the retry is accepted in full once fixed | DB test over four malformed values; workflow test; e2e E7 alert |
 | A claim-step flag (reconcile exhausted after crashes) raised no alert | Claim returns newly flagged rows; dispatcher posts one ops alert; record functions return `newly_flagged` | DB tests (once only, flag persists); e2e E13 (exactly one alert over three cycles) |
 
-Not yet applied live: migration 003 and the Intake/Dispatcher workflow updates await deployment approval.
+**Deployed live 2026-11-01** (migration 003, then Intake and Dispatcher v2.0.1 via the n8n-workflow-builder MCP; Error Handler unchanged). Live function bodies verified by hash against the repo; grants unchanged; both workflows verified node-for-node against the build.
+
+| Live check | Result | Evidence |
+|---|---|---|
+| Fix 1: future-dated event | **Pass** | HTTP 400 on `occurred_at`; no event or contact written (run `v2011793550142`) |
+| Fix 3: claim-step flag alert | **Pass** | Run 18656 flagged `88888e6c…` once; Slack ops alert `ok`, ts `1793550017.470509` in the ops channel; runs 18657-18658 did not repeat it; no resend |
+| Regression: hot lead | **Pass** | HTTP 202, `sent` / `provider_ack` on attempt 1, Slack ts `1793550557.456169` |
+| Fix 2: malformed channel | Not run live by design | Would require breaking the live channel config; covered by DB, workflow and e2e tests |
+| Cleanup | **Done** | Both synthetic runs purged; all v2 data tables empty |
 
 ## Live verification (2026-10-31, Render n8n 2.38.7 + Supabase "Lead Qualifier Pro" + Slack)
 
@@ -74,7 +82,7 @@ Not yet applied live: migration 003 and the Intake/Dispatcher workflow updates a
 | **Slack metadata round trip / reconciliation** | **Pass** | Row forced to `uncertain`; next dispatcher run found the same ts in `conversations.history` via metadata: `sent (reconciled)`, no second message |
 | Narrow purge | **Pass** | `lq_v2_purge_synthetic_run('smoke1793421159')` removed 2 events, 1 contact, nothing else |
 
-Still open: an ops alert reaching the ops channel after the bot was invited (the only alert so far fired before the invite), behavior under load, and Render free-tier sleep latency.
+Still open: behavior under load and Render free-tier sleep latency. (Ops-channel alert delivery is now verified live; see the v2.0.1 table.)
 
 Out of scope by decision: HubSpot intake and signature verification (synthetic intake uses a shared header token), CRM writeback, AI scoring, enrichment, Slack buttons, nurture email sending.
 

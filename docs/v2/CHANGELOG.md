@@ -1,6 +1,6 @@
 # LQ v2 Changelog
 
-## 2.0.1 (2026-11-01, review fixes, not yet deployed)
+## 2.0.1 (2026-11-01, review fixes, deployed 2026-11-01)
 
 From the independent review of PR #1. Requires migration `003_review_fixes.sql` and updated Intake and Dispatcher workflows.
 
