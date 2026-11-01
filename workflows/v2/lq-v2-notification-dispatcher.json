@@ -1,0 +1,533 @@
+{
+  "name": "LQ v2 - Notification Dispatcher",
+  "nodes": [
+    {
+      "id": "31f84598-4a0b-4aa8-ad90-a4d18adebe91",
+      "name": "Read Me",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        -360
+      ],
+      "parameters": {
+        "content": "## LQ v2 Notification Dispatcher (v2.0.1)\nEvery minute:\n1. lq_v2_claim_notifications: expired leases -> uncertain; lease due pending rows; claim due uncertain rows for reconciliation.\n2. send: chat.postMessage with metadata {notification_id}. Result classified as sent / retryable / permanent / uncertain and recorded with the Slack receipt.\n3. reconcile: conversations.history searched by metadata. found -> sent. not found -> requeue. inconclusive -> retry, then operator.\n\nIf a Slack call gets no response at all (timeout, network), the run fails, ops is alerted, and the lease expiry marks the row uncertain so reconciliation decides. No n8n auto-retry: retries are scheduled by the database.\nContract: docs/v2/delivery-contract.md",
+        "height": 340,
+        "width": 420
+      }
+    },
+    {
+      "id": "bd502b18-41c2-47e4-ab16-7a485efe56f4",
+      "name": "Every Minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "3ecb2d0e-6e3b-4501-a006-47f76837b419",
+      "name": "Claim Notifications (RPC)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "__LQ_V2_SUPABASE_URL__/rest/v1/rpc/lq_v2_claim_notifications",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"p_limit\": 10, \"p_lease_seconds\": 120}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpMultipleHeadersAuth": {
+          "id": "__LQ_V2_CRED_SUPABASE_ID__",
+          "name": "__LQ_V2_CRED_SUPABASE_NAME__"
+        }
+      }
+    },
+    {
+      "id": "ea37bbc7-b3f6-4201-a9e6-59dec31473e3",
+      "name": "Flagged Alert Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "const flagged = $input.first().json.flagged || [];\nif (!flagged.length) return [];\nreturn [{ json: { channel: \"__LQ_V2_SLACK_OPS_CHANNEL_ID__\", text: ':rotating_light: *LQ v2 notification needs operator action*\\nReconciliation attempts exhausted: ' + flagged.map((f) => f.id).join(', ') + '\\nSee lq_v2.ops_attention.' } }];"
+      }
+    },
+    {
+      "id": "6af396cb-36a6-45e9-a79a-1163c3d022b9",
+      "name": "Slack Flagged Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        -200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json; charset=utf-8"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $json.channel, text: $json.text, unfurl_links: false }) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__LQ_V2_CRED_SLACK_ID__",
+          "name": "__LQ_V2_CRED_SLACK_NAME__"
+        }
+      }
+    },
+    {
+      "id": "243ee80d-02f7-4d43-aa31-1b3b366325bd",
+      "name": "Split Claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return ($input.first().json.claims || []).map((c) => ({ json: c }));"
+      }
+    },
+    {
+      "id": "eb533b60-371b-4dea-a3c1-cfdbb1502994",
+      "name": "Send or Reconcile",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "40e20514-b9ab-4c85-a510-1f155f87e43a",
+              "leftValue": "={{ $json.mode }}",
+              "rightValue": "send",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0b17ea3f-7dcb-4b03-a82d-2ad7a951a08b",
+      "name": "Slack chat.postMessage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        -160
+      ],
+      "parameters": {
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json; charset=utf-8"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $json.channel, text: $json.text, unfurl_links: false, unfurl_media: false, metadata: { event_type: 'lq_v2_notification', event_payload: { notification_id: $json.notification_id, correlation_id: $json.correlation_id } } }) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__LQ_V2_CRED_SLACK_ID__",
+          "name": "__LQ_V2_CRED_SLACK_NAME__"
+        }
+      }
+    },
+    {
+      "id": "c34da18d-f9e0-4d1d-a7a7-b462abe609fb",
+      "name": "Classify Send Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        -240
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ---- src/notify.js ----\n// Slack notification helpers: message rendering, send-result classification and\n// reconciliation lookup. Pure functions; the n8n dispatcher does the HTTP calls.\n// State machine: docs/v2/delivery-contract.md.\n\nconst METADATA_EVENT_TYPE = 'lq_v2_notification';\n\n// Slack mrkdwn control characters. Escaping stops lead-supplied text from\n// injecting mentions such as <!channel> or links.\nfunction slackEscape(v) {\n  return String(v === null || v === undefined ? '' : v)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\nfunction correlationIdFor(event) {\n  return `lqv2:${event.source}:${event.source_event_id}`;\n}\n\n// Content preserved from the v1 \"Send Slack Alert\" node. The localhost\n// workflow link is replaced by the correlation reference.\nfunction renderSlackText(event, score) {\n  const c = event.contact;\n  return [\n    '🔥 *HIGH PRIORITY LEAD - CALL NOW*',\n    '',\n    `*Name:* ${slackEscape(c.name)}`,\n    `*Company:* ${slackEscape(c.company)}`,\n    `*Email:* ${slackEscape(c.email)}`,\n    '',\n    `*Fit Score:* ${score.fit}/100`,\n    `*Urgency Score:* ${score.urgency}/100`,\n    '',\n    `*Analysis:* ${slackEscape(score.reason)}`,\n    '',\n    `*Ref:* ${slackEscape(correlationIdFor(event))}`\n  ].join('\\n');\n}\n\nconst RETRYABLE_SLACK_ERRORS = new Set(['ratelimited', 'rate_limited', 'service_unavailable']);\nconst AMBIGUOUS_SLACK_ERRORS = new Set(['internal_error', 'fatal_error', 'request_timeout']);\n// Network errors where the request cannot have reached Slack. Includes n8n's\n// humanized wording for a refused connection. Everything else (n8n reports\n// timeouts as \"The connection was aborted...\") stays uncertain.\nconst NOT_DELIVERED_NETWORK_RE = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|CERT_|certificate|refused the connection/i;\n\nfunction parseBody(body) {\n  if (typeof body === 'string') {\n    try {\n      return JSON.parse(body);\n    } catch (e) {\n      return null;\n    }\n  }\n  return body && typeof body === 'object' ? body : null;\n}\n\n// Input: { statusCode, body } for an HTTP response, or { error } when no\n// response arrived. Output outcome is one of:\n//   sent | retryable_failure | permanent_failure | uncertain\n// Anything we cannot prove either way is \"uncertain\", never \"failed\".\nfunction classifySendResponse({ statusCode, body, error }) {\n  if (error !== undefined && error !== null && statusCode === undefined) {\n    const text = typeof error === 'string' ? error : JSON.stringify(error);\n    if (NOT_DELIVERED_NETWORK_RE.test(text)) {\n      return { outcome: 'retryable_failure', provider_error: 'network: ' + text.slice(0, 300) };\n    }\n    return { outcome: 'uncertain', provider_error: 'no response: ' + text.slice(0, 300) };\n  }\n\n  const b = parseBody(body);\n  if (statusCode === 429) return { outcome: 'retryable_failure', provider_error: 'ratelimited', http_status: 429 };\n  if (statusCode >= 500) return { outcome: 'uncertain', provider_error: `http_${statusCode}`, http_status: statusCode };\n  if (statusCode >= 400) {\n    return { outcome: 'permanent_failure', provider_error: (b && b.error) || `http_${statusCode}`, http_status: statusCode };\n  }\n  if (!b) return { outcome: 'uncertain', provider_error: 'unparseable_response', http_status: statusCode };\n\n  if (b.ok === true) {\n    if (typeof b.ts === 'string' && b.ts && typeof b.channel === 'string' && b.channel) {\n      return { outcome: 'sent', message_ts: b.ts, provider_channel: b.channel, http_status: statusCode };\n    }\n    // Slack says ok but gave no receipt: it probably posted. Reconcile.\n    return { outcome: 'uncertain', provider_error: 'ok_without_receipt', http_status: statusCode };\n  }\n  const err = typeof b.error === 'string' ? b.error : 'unknown_error';\n  if (RETRYABLE_SLACK_ERRORS.has(err)) return { outcome: 'retryable_failure', provider_error: err, http_status: statusCode };\n  if (AMBIGUOUS_SLACK_ERRORS.has(err)) return { outcome: 'uncertain', provider_error: err, http_status: statusCode };\n  return { outcome: 'permanent_failure', provider_error: err, http_status: statusCode };\n}\n\n// Looks for our message in a conversations.history response.\n// found: message exists (with ts). not_found: conclusive absence.\n// reconcile_error: could not decide (API error or more pages to read).\nfunction findReconciledMessage({ statusCode, body, error }, notificationId) {\n  if (error !== undefined && error !== null && statusCode === undefined) {\n    return { outcome: 'reconcile_error', provider_error: 'no response: ' + String(typeof error === 'string' ? error : JSON.stringify(error)).slice(0, 300) };\n  }\n  const b = parseBody(body);\n  if (!b || b.ok !== true || !Array.isArray(b.messages)) {\n    return { outcome: 'reconcile_error', provider_error: (b && b.error) || `http_${statusCode}`, http_status: statusCode };\n  }\n  const hit = b.messages.find(\n    (m) =>\n      m &&\n      m.metadata &&\n      m.metadata.event_type === METADATA_EVENT_TYPE &&\n      m.metadata.event_payload &&\n      m.metadata.event_payload.notification_id === notificationId\n  );\n  if (hit) return { outcome: 'found', message_ts: hit.ts, http_status: statusCode };\n  if (b.has_more) return { outcome: 'reconcile_error', provider_error: 'inconclusive_more_pages', http_status: statusCode };\n  return { outcome: 'not_found', http_status: statusCode };\n}\n\n// ---- node ----\nconst claim = $('Split Claims').item.json;\nconst result = classifySendResponse({ statusCode: $json.statusCode, body: $json.body });\nconst raw = $json.body;\nconst provider_response = raw && typeof raw === 'object' ? raw : { raw: String(raw).slice(0, 2000) };\nreturn { json: { p_notification_id: claim.notification_id, p_attempt_no: claim.attempt_no, p_result: { ...result, provider_response } } };"
+      }
+    },
+    {
+      "id": "fa05afe1-6ab5-4bc8-a50a-848b650607b8",
+      "name": "Record Send Result (RPC)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "__LQ_V2_SUPABASE_URL__/rest/v1/rpc/lq_v2_record_send_result",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpMultipleHeadersAuth": {
+          "id": "__LQ_V2_CRED_SUPABASE_ID__",
+          "name": "__LQ_V2_CRED_SUPABASE_NAME__"
+        }
+      }
+    },
+    {
+      "id": "c837bf26-7550-4903-ab25-c5da8fe0fb1c",
+      "name": "Slack conversations.history",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        160
+      ],
+      "parameters": {
+        "url": "https://slack.com/api/conversations.history",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "method": "GET",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "channel",
+              "value": "={{ $json.channel }}"
+            },
+            {
+              "name": "oldest",
+              "value": "={{ $json.oldest }}"
+            },
+            {
+              "name": "include_all_metadata",
+              "value": "true"
+            },
+            {
+              "name": "limit",
+              "value": "200"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__LQ_V2_CRED_SLACK_ID__",
+          "name": "__LQ_V2_CRED_SLACK_NAME__"
+        }
+      }
+    },
+    {
+      "id": "6575aa47-38f3-4405-a2d4-dec83e5405be",
+      "name": "Classify Reconcile Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        80
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ---- src/notify.js ----\n// Slack notification helpers: message rendering, send-result classification and\n// reconciliation lookup. Pure functions; the n8n dispatcher does the HTTP calls.\n// State machine: docs/v2/delivery-contract.md.\n\nconst METADATA_EVENT_TYPE = 'lq_v2_notification';\n\n// Slack mrkdwn control characters. Escaping stops lead-supplied text from\n// injecting mentions such as <!channel> or links.\nfunction slackEscape(v) {\n  return String(v === null || v === undefined ? '' : v)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\nfunction correlationIdFor(event) {\n  return `lqv2:${event.source}:${event.source_event_id}`;\n}\n\n// Content preserved from the v1 \"Send Slack Alert\" node. The localhost\n// workflow link is replaced by the correlation reference.\nfunction renderSlackText(event, score) {\n  const c = event.contact;\n  return [\n    '🔥 *HIGH PRIORITY LEAD - CALL NOW*',\n    '',\n    `*Name:* ${slackEscape(c.name)}`,\n    `*Company:* ${slackEscape(c.company)}`,\n    `*Email:* ${slackEscape(c.email)}`,\n    '',\n    `*Fit Score:* ${score.fit}/100`,\n    `*Urgency Score:* ${score.urgency}/100`,\n    '',\n    `*Analysis:* ${slackEscape(score.reason)}`,\n    '',\n    `*Ref:* ${slackEscape(correlationIdFor(event))}`\n  ].join('\\n');\n}\n\nconst RETRYABLE_SLACK_ERRORS = new Set(['ratelimited', 'rate_limited', 'service_unavailable']);\nconst AMBIGUOUS_SLACK_ERRORS = new Set(['internal_error', 'fatal_error', 'request_timeout']);\n// Network errors where the request cannot have reached Slack. Includes n8n's\n// humanized wording for a refused connection. Everything else (n8n reports\n// timeouts as \"The connection was aborted...\") stays uncertain.\nconst NOT_DELIVERED_NETWORK_RE = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|CERT_|certificate|refused the connection/i;\n\nfunction parseBody(body) {\n  if (typeof body === 'string') {\n    try {\n      return JSON.parse(body);\n    } catch (e) {\n      return null;\n    }\n  }\n  return body && typeof body === 'object' ? body : null;\n}\n\n// Input: { statusCode, body } for an HTTP response, or { error } when no\n// response arrived. Output outcome is one of:\n//   sent | retryable_failure | permanent_failure | uncertain\n// Anything we cannot prove either way is \"uncertain\", never \"failed\".\nfunction classifySendResponse({ statusCode, body, error }) {\n  if (error !== undefined && error !== null && statusCode === undefined) {\n    const text = typeof error === 'string' ? error : JSON.stringify(error);\n    if (NOT_DELIVERED_NETWORK_RE.test(text)) {\n      return { outcome: 'retryable_failure', provider_error: 'network: ' + text.slice(0, 300) };\n    }\n    return { outcome: 'uncertain', provider_error: 'no response: ' + text.slice(0, 300) };\n  }\n\n  const b = parseBody(body);\n  if (statusCode === 429) return { outcome: 'retryable_failure', provider_error: 'ratelimited', http_status: 429 };\n  if (statusCode >= 500) return { outcome: 'uncertain', provider_error: `http_${statusCode}`, http_status: statusCode };\n  if (statusCode >= 400) {\n    return { outcome: 'permanent_failure', provider_error: (b && b.error) || `http_${statusCode}`, http_status: statusCode };\n  }\n  if (!b) return { outcome: 'uncertain', provider_error: 'unparseable_response', http_status: statusCode };\n\n  if (b.ok === true) {\n    if (typeof b.ts === 'string' && b.ts && typeof b.channel === 'string' && b.channel) {\n      return { outcome: 'sent', message_ts: b.ts, provider_channel: b.channel, http_status: statusCode };\n    }\n    // Slack says ok but gave no receipt: it probably posted. Reconcile.\n    return { outcome: 'uncertain', provider_error: 'ok_without_receipt', http_status: statusCode };\n  }\n  const err = typeof b.error === 'string' ? b.error : 'unknown_error';\n  if (RETRYABLE_SLACK_ERRORS.has(err)) return { outcome: 'retryable_failure', provider_error: err, http_status: statusCode };\n  if (AMBIGUOUS_SLACK_ERRORS.has(err)) return { outcome: 'uncertain', provider_error: err, http_status: statusCode };\n  return { outcome: 'permanent_failure', provider_error: err, http_status: statusCode };\n}\n\n// Looks for our message in a conversations.history response.\n// found: message exists (with ts). not_found: conclusive absence.\n// reconcile_error: could not decide (API error or more pages to read).\nfunction findReconciledMessage({ statusCode, body, error }, notificationId) {\n  if (error !== undefined && error !== null && statusCode === undefined) {\n    return { outcome: 'reconcile_error', provider_error: 'no response: ' + String(typeof error === 'string' ? error : JSON.stringify(error)).slice(0, 300) };\n  }\n  const b = parseBody(body);\n  if (!b || b.ok !== true || !Array.isArray(b.messages)) {\n    return { outcome: 'reconcile_error', provider_error: (b && b.error) || `http_${statusCode}`, http_status: statusCode };\n  }\n  const hit = b.messages.find(\n    (m) =>\n      m &&\n      m.metadata &&\n      m.metadata.event_type === METADATA_EVENT_TYPE &&\n      m.metadata.event_payload &&\n      m.metadata.event_payload.notification_id === notificationId\n  );\n  if (hit) return { outcome: 'found', message_ts: hit.ts, http_status: statusCode };\n  if (b.has_more) return { outcome: 'reconcile_error', provider_error: 'inconclusive_more_pages', http_status: statusCode };\n  return { outcome: 'not_found', http_status: statusCode };\n}\n\n// ---- node ----\nconst claim = $('Split Claims').item.json;\nconst result = findReconciledMessage({ statusCode: $json.statusCode, body: $json.body }, claim.notification_id);\nconst raw = $json.body;\nconst provider_response = raw && typeof raw === 'object' ? raw : { raw: String(raw).slice(0, 2000) };\nreturn { json: { p_notification_id: claim.notification_id, p_attempt_no: claim.attempt_no, p_result: { ...result, provider_response } } };"
+      }
+    },
+    {
+      "id": "64f61029-d6ff-4c75-a0a5-7e3f37f7a241",
+      "name": "Record Reconcile Result (RPC)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "__LQ_V2_SUPABASE_URL__/rest/v1/rpc/lq_v2_record_reconcile_result",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpMultipleHeadersAuth": {
+          "id": "__LQ_V2_CRED_SUPABASE_ID__",
+          "name": "__LQ_V2_CRED_SUPABASE_NAME__"
+        }
+      }
+    },
+    {
+      "id": "fd1c625e-2f41-4157-a1a3-bdd3989b9da7",
+      "name": "Raise Operator Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// newly_flagged: true only on the call that set the flag, so one alert per flag.\nconst flagged = $input.all().filter((i) => i.json.newly_flagged).map((i) => i.json.notification);\nif (flagged.length) {\n  throw new Error('LQ v2 notification needs operator action: ' + flagged.map((n) => `${n.id} (${n.status})`).join(', '));\n}\nreturn $input.all();"
+      }
+    }
+  ],
+  "connections": {
+    "Every Minute": {
+      "main": [
+        [
+          {
+            "node": "Claim Notifications (RPC)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Notifications (RPC)": {
+      "main": [
+        [
+          {
+            "node": "Split Claims",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Flagged Alert Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flagged Alert Text": {
+      "main": [
+        [
+          {
+            "node": "Slack Flagged Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Claims": {
+      "main": [
+        [
+          {
+            "node": "Send or Reconcile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send or Reconcile": {
+      "main": [
+        [
+          {
+            "node": "Slack chat.postMessage",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack conversations.history",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack chat.postMessage": {
+      "main": [
+        [
+          {
+            "node": "Classify Send Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Send Result": {
+      "main": [
+        [
+          {
+            "node": "Record Send Result (RPC)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack conversations.history": {
+      "main": [
+        [
+          {
+            "node": "Classify Reconcile Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Reconcile Result": {
+      "main": [
+        [
+          {
+            "node": "Record Reconcile Result (RPC)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Send Result (RPC)": {
+      "main": [
+        [
+          {
+            "node": "Raise Operator Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Reconcile Result (RPC)": {
+      "main": [
+        [
+          {
+            "node": "Raise Operator Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "lqVersion": "2.0.1"
+  }
+}
