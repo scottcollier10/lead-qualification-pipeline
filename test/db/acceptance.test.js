@@ -195,7 +195,7 @@ test('8. missing notification target aborts the whole batch (no partial acceptan
   const run = newRunTag();
   await assert.rejects(
     submit(pool, [lead(run, 'nurture', PROFILES.fit50), lead(run, 'hot', PROFILES.highFit)], { channel: null }),
-    /notification target\/text missing/
+    /notification target missing or malformed/
   );
   assert.equal((await countsForRun(pool, run)).events, 0);
 });

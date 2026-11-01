@@ -1,6 +1,6 @@
 # LQ v2 Test Results
 
-Run date: 2026-10-30. Branch `feat/lq-v2-reliable-pipeline`. **98 automated tests, 98 passed, 0 failed.** Every test ran locally. No cloud resource, deployed workflow, production database or live Slack workspace was touched.
+Run date: 2026-10-30. Branch `feat/lq-v2-reliable-pipeline`. **108 automated tests, 108 passed, 0 failed** (v2.0.1). Every test ran locally. No cloud resource, deployed workflow, production database or live Slack workspace was touched.
 
 ## Evidence levels
 
@@ -13,13 +13,14 @@ Run date: 2026-10-30. Branch `feat/lq-v2-reliable-pipeline`. **98 automated test
 
 | Suite | Command | Tests | Result |
 |---|---|---|---|
-| Unit: scoring parity, validation, classification | `npm run test:unit` | 44 | pass |
+| Unit: scoring parity, validation, classification | `npm run test:unit` | 46 | pass |
 | Workflow exports: drift, graph, Code-node execution | `npm run test:workflows` | 12 | pass |
 | DB: acceptance | `npm run test:db` | 16 | pass |
+| DB: review fixes (migration 003, incl. rollback round trip) | `npm run test:db` | 6 | pass |
 | DB: delivery state machine (Slack simulated) | `npm run test:db` | 14 | pass |
-| n8n end-to-end (Slack simulated) | `npm run test:e2e` | 12 | pass |
+| n8n end-to-end (Slack simulated), n8n 2.38.7 | `npm run test:e2e` | 14 | pass |
 
-Unit + workflow + DB = 86 tests (`npm test`). The e2e suite adds 12. The parity test covers 6 fixture profiles plus 6 extra inputs against the original v1 node code.
+Unit + workflow + DB = 94 tests (`npm test`). The e2e suite adds 14. The parity test covers 6 fixture profiles plus 6 extra inputs against the original v1 node code.
 
 ## Acceptance scenarios from the verification report
 
@@ -49,6 +50,16 @@ Unit + workflow + DB = 86 tests (`npm test`). The e2e suite adds 12. The parity 
 6. **Deployment through the n8n-workflow-builder MCP drops per-node `onError`.** The workflows no longer use it: the RPC and Slack calls use never-error responses, and network failures fall back to the error workflow plus lease recovery. A test now fails if any node uses `onError`. This also supersedes fix 1, since error-output items are no longer classified.
 
 Observed n8n behavior that the design now depends on (verified on 2.14.2): a webhook with Header Auth returns 403 before the workflow runs; malformed JSON returns 422; `Respond to Webhook` honors an expression response code; HTTP 4.2 `neverError` + `fullResponse` exposes status and body; `$('Split Claims').item` pairs correctly through IF and HTTP nodes; a timeout appears as `NodeApiError` "The connection was aborted, perhaps the server is offline" with no error code.
+
+## Review fixes (v2.0.1, independent review of PR #1)
+
+| Finding | Fix | Evidence |
+|---|---|---|
+| A far-future `occurred_at` froze a contact's fields | Rejected beyond 5 minutes of clock skew in validation and in `accept_event` (insert-time check, not a CHECK constraint) | Unit tests; DB tests incl. JS bypass and no-freeze; e2e E14 |
+| A malformed Slack channel turned every hot lead into a permanent 400 | Treated as a deployment error: whole request aborts, 503, ops alerted; the retry is accepted in full once fixed | DB test over four malformed values; workflow test; e2e E7 alert |
+| A claim-step flag (reconcile exhausted after crashes) raised no alert | Claim returns newly flagged rows; dispatcher posts one ops alert; record functions return `newly_flagged` | DB tests (once only, flag persists); e2e E13 (exactly one alert over three cycles) |
+
+Not yet applied live: migration 003 and the Intake/Dispatcher workflow updates await deployment approval.
 
 ## Live verification (2026-10-31, Render n8n 2.38.7 + Supabase "Lead Qualifier Pro" + Slack)
 

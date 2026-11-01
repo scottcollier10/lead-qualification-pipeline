@@ -9,7 +9,7 @@ const { renderSlackText } = require('./notify');
 // @import-end
 
 function prepareIntake(body, config) {
-  const { valid, invalid } = normalizeRequest(body);
+  const { valid, invalid } = normalizeRequest(body, config.nowMs);
   const events = valid.map((e) => {
     const score = scoreLead(e.scoring_input);
     return {

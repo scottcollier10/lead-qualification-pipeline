@@ -202,7 +202,11 @@ function buildIntake(c) {
       '}',
       '// The database did not confirm acceptance. Nothing was committed, so the',
       '// sender must retry; retries are safe because acceptance is idempotent.',
-      "return [{ json: { statusCode: 503, body: { status: 503, error: 'not_accepted', retry: true } } }];"
+      '// A misconfiguration (e.g. malformed Slack channel) lands here too, so',
+      '// `alert` makes "Raise Intake Alert" page ops after the 503 is sent.',
+      "const detail = body && body.message ? body.message : (typeof db.body === 'string' ? db.body : JSON.stringify(db.body));",
+      "const alert = `LQ v2 intake could not confirm acceptance (database HTTP ${db.statusCode}): ${String(detail).slice(0, 300)}`;",
+      "return [{ json: { statusCode: 503, body: { status: 503, error: 'not_accepted', retry: true }, alert } }];"
     ].join('\n')
   });
 
@@ -212,12 +216,23 @@ function buildIntake(c) {
     options: { responseCode: '={{ $json.statusCode }}' }
   });
 
+  // Runs after the sender already has its 503: fail the run so the error
+  // workflow alerts ops. Nothing was committed, so nothing to undo.
+  b.add('Raise Intake Alert', 'n8n-nodes-base.code', 2, [1340, 0], {
+    jsCode: [
+      'const alert = $input.first().json.alert;',
+      'if (alert) throw new Error(alert);',
+      'return $input.all();'
+    ].join('\n')
+  });
+
   b.connect('Intake Webhook', 'Validate and Score');
   b.connect('Validate and Score', 'Any Valid Events');
   b.connect('Any Valid Events', 'Accept Events (RPC)', 0);
   b.connect('Any Valid Events', 'Build Response', 1);
   b.connect('Accept Events (RPC)', 'Build Response', 0);
   b.connect('Build Response', 'Respond');
+  b.connect('Respond', 'Raise Intake Alert');
 
   return { name, nodes: b.nodes, connections: b.connections, settings: settings(c), active: false, pinData: {}, meta: { lqVersion: VERSION } };
 }
@@ -240,6 +255,32 @@ function buildDispatcher(c) {
   b.add('Claim Notifications (RPC)', 'n8n-nodes-base.httpRequest', 4.2, [220, 0],
     rpcParams(c, 'lq_v2_claim_notifications', '{"p_limit": 10, "p_lease_seconds": 120}'),
     { credentials: supabaseCred(c) });
+
+  // Rows the claim call just flagged for an operator (reconciliation exhausted
+  // after a crash). Each row is returned once, so it alerts once. Posted
+  // directly rather than thrown: a throw here would stall this run's leased
+  // sends. Positioned above Split Claims so it runs first. The flag is already
+  // committed, so a failed Slack post loses only the message, not the flag
+  // (it stays visible in lq_v2.ops_attention).
+  b.add('Flagged Alert Text', 'n8n-nodes-base.code', 2, [440, -200], {
+    jsCode: [
+      "const flagged = $input.first().json.flagged || [];",
+      "if (!flagged.length) return [];",
+      `return [{ json: { channel: ${JSON.stringify(c.LQ_V2_SLACK_OPS_CHANNEL_ID)}, text: ':rotating_light: *LQ v2 notification needs operator action*\\nReconciliation attempts exhausted: ' + flagged.map((f) => f.id).join(', ') + '\\nSee lq_v2.ops_attention.' } }];`
+    ].join('\n')
+  });
+  b.add('Slack Flagged Alert', 'n8n-nodes-base.httpRequest', 4.2, [660, -200], {
+    method: 'POST',
+    url: `${c.LQ_V2_SLACK_API_BASE}/chat.postMessage`,
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'httpHeaderAuth',
+    sendHeaders: true,
+    headerParameters: { parameters: [{ name: 'Content-Type', value: 'application/json; charset=utf-8' }] },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ JSON.stringify({ channel: $json.channel, text: $json.text, unfurl_links: false }) }}',
+    options: { timeout: 10000, response: { response: { neverError: true } } }
+  }, { credentials: slackCred(c) });
 
   b.add('Split Claims', 'n8n-nodes-base.code', 2, [440, 0], {
     jsCode: 'return ($input.first().json.claims || []).map((c) => ({ json: c }));'
@@ -309,7 +350,8 @@ function buildDispatcher(c) {
   // State is already committed before this throws.
   b.add('Raise Operator Alert', 'n8n-nodes-base.code', 2, [1620, 0], {
     jsCode: [
-      'const flagged = $input.all().map((i) => i.json.notification).filter((n) => n && n.operator_required);',
+      '// newly_flagged: true only on the call that set the flag, so one alert per flag.',
+      'const flagged = $input.all().filter((i) => i.json.newly_flagged).map((i) => i.json.notification);',
       'if (flagged.length) {',
       "  throw new Error('LQ v2 notification needs operator action: ' + flagged.map((n) => `${n.id} (${n.status})`).join(', '));",
       '}',
@@ -319,6 +361,8 @@ function buildDispatcher(c) {
 
   b.connect('Every Minute', 'Claim Notifications (RPC)');
   b.connect('Claim Notifications (RPC)', 'Split Claims');
+  b.connect('Claim Notifications (RPC)', 'Flagged Alert Text');
+  b.connect('Flagged Alert Text', 'Slack Flagged Alert');
   b.connect('Split Claims', 'Send or Reconcile');
   b.connect('Send or Reconcile', 'Slack chat.postMessage', 0);
   b.connect('Send or Reconcile', 'Slack conversations.history', 1);

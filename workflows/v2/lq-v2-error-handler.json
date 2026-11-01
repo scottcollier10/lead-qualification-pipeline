@@ -11,7 +11,7 @@
         -300
       ],
       "parameters": {
-        "content": "## LQ v2 Error Handler (v2.0.0)\nSet as the error workflow of Intake and Dispatcher.\nAlerts Slack and logs to lq_v2.workflow_errors in parallel; each is best effort so one outage does not hide the other.\nReads the documented payload: execution.error, execution.lastNodeExecuted.",
+        "content": "## LQ v2 Error Handler (v2.0.1)\nSet as the error workflow of Intake and Dispatcher.\nAlerts Slack and logs to lq_v2.workflow_errors in parallel; each is best effort so one outage does not hide the other.\nReads the documented payload: execution.error, execution.lastNodeExecuted.",
         "height": 220,
         "width": 420
       }
@@ -163,6 +163,6 @@
   "active": false,
   "pinData": {},
   "meta": {
-    "lqVersion": "2.0.0"
+    "lqVersion": "2.0.1"
   }
 }

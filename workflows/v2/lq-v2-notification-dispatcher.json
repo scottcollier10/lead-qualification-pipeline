@@ -11,7 +11,7 @@
         -360
       ],
       "parameters": {
-        "content": "## LQ v2 Notification Dispatcher (v2.0.0)\nEvery minute:\n1. lq_v2_claim_notifications: expired leases -> uncertain; lease due pending rows; claim due uncertain rows for reconciliation.\n2. send: chat.postMessage with metadata {notification_id}. Result classified as sent / retryable / permanent / uncertain and recorded with the Slack receipt.\n3. reconcile: conversations.history searched by metadata. found -> sent. not found -> requeue. inconclusive -> retry, then operator.\n\nIf a Slack call gets no response at all (timeout, network), the run fails, ops is alerted, and the lease expiry marks the row uncertain so reconciliation decides. No n8n auto-retry: retries are scheduled by the database.\nContract: docs/v2/delivery-contract.md",
+        "content": "## LQ v2 Notification Dispatcher (v2.0.1)\nEvery minute:\n1. lq_v2_claim_notifications: expired leases -> uncertain; lease due pending rows; claim due uncertain rows for reconciliation.\n2. send: chat.postMessage with metadata {notification_id}. Result classified as sent / retryable / permanent / uncertain and recorded with the Slack receipt.\n3. reconcile: conversations.history searched by metadata. found -> sent. not found -> requeue. inconclusive -> retry, then operator.\n\nIf a Slack call gets no response at all (timeout, network), the run fails, ops is alerted, and the lease expiry marks the row uncertain so reconciliation decides. No n8n auto-retry: retries are scheduled by the database.\nContract: docs/v2/delivery-contract.md",
         "height": 340,
         "width": 420
       }
@@ -70,6 +70,61 @@
         "httpMultipleHeadersAuth": {
           "id": "__LQ_V2_CRED_SUPABASE_ID__",
           "name": "__LQ_V2_CRED_SUPABASE_NAME__"
+        }
+      }
+    },
+    {
+      "id": "ea37bbc7-b3f6-4201-a9e6-59dec31473e3",
+      "name": "Flagged Alert Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "const flagged = $input.first().json.flagged || [];\nif (!flagged.length) return [];\nreturn [{ json: { channel: \"__LQ_V2_SLACK_OPS_CHANNEL_ID__\", text: ':rotating_light: *LQ v2 notification needs operator action*\\nReconciliation attempts exhausted: ' + flagged.map((f) => f.id).join(', ') + '\\nSee lq_v2.ops_attention.' } }];"
+      }
+    },
+    {
+      "id": "6af396cb-36a6-45e9-a79a-1163c3d022b9",
+      "name": "Slack Flagged Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        -200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json; charset=utf-8"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $json.channel, text: $json.text, unfurl_links: false }) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__LQ_V2_CRED_SLACK_ID__",
+          "name": "__LQ_V2_CRED_SLACK_NAME__"
         }
       }
     },
@@ -325,7 +380,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "const flagged = $input.all().map((i) => i.json.notification).filter((n) => n && n.operator_required);\nif (flagged.length) {\n  throw new Error('LQ v2 notification needs operator action: ' + flagged.map((n) => `${n.id} (${n.status})`).join(', '));\n}\nreturn $input.all();"
+        "jsCode": "// newly_flagged: true only on the call that set the flag, so one alert per flag.\nconst flagged = $input.all().filter((i) => i.json.newly_flagged).map((i) => i.json.notification);\nif (flagged.length) {\n  throw new Error('LQ v2 notification needs operator action: ' + flagged.map((n) => `${n.id} (${n.status})`).join(', '));\n}\nreturn $input.all();"
       }
     }
   ],
@@ -346,6 +401,22 @@
         [
           {
             "node": "Split Claims",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Flagged Alert Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flagged Alert Text": {
+      "main": [
+        [
+          {
+            "node": "Slack Flagged Alert",
             "type": "main",
             "index": 0
           }
@@ -457,6 +528,6 @@
   "active": false,
   "pinData": {},
   "meta": {
-    "lqVersion": "2.0.0"
+    "lqVersion": "2.0.1"
   }
 }

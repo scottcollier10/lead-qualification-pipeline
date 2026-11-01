@@ -1,5 +1,13 @@
 # LQ v2 Changelog
 
+## 2.0.1 (2026-11-01, review fixes, not yet deployed)
+
+From the independent review of PR #1. Requires migration `003_review_fixes.sql` and updated Intake and Dispatcher workflows.
+
+- **Future-dated events:** `occurred_at` more than 5 minutes ahead (UTC) is rejected, in validation and in `lq_v2.accept_event`. Previously one bad clock could freeze a contact's fields.
+- **Malformed Slack channel:** now a deployment error (503 and an ops alert, with the whole request retried later) instead of a per-event 400 that silently dropped hot leads.
+- **Ops alerts:** rows flagged by the claim step now raise one ops alert. Record functions report `newly_flagged`, so each flag alerts exactly once. Flags persist even if the alert fails.
+
 ## 2.0.0 (2026-10-30, not deployed)
 
 A selective refactor of the v1 basic workflow (`lead-qualification-production-v1.json`). The scoring and routing rules stay the same. The event handling, persistence and Slack delivery underneath them are replaced.

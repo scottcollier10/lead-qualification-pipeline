@@ -17,7 +17,7 @@ Body: one event object, or an array of 1 to 50 event objects.
 |---|---|---|
 | `source_event_id` | yes | 1-200 chars of `A-Z a-z 0-9 . _ : -`. Stable for the life of the event: a sender retry must reuse it. |
 | `source` | no | 1-40 chars of `a-z 0-9 _ -`. Default `synthetic`. Idempotency key is `(source, source_event_id)`. |
-| `occurred_at` | no | ISO 8601. Used to order contact updates. Defaults to receive time. |
+| `occurred_at` | no | ISO 8601. Used to order contact updates. Defaults to receive time. At most 5 minutes ahead of the server clock (UTC); later is rejected so one bad clock cannot freeze a contact. Enforced in validation and again in `lq_v2.accept_event`. |
 | `email` | yes | String, trimmed and lowercased, max 254, basic address shape. |
 | `crm_object_id` | no | String or integer id, max 64. Stored, not used for identity yet. |
 | `first_name` / `firstName`, `last_name` / `lastName` | no | Strings, max 100. |
@@ -60,7 +60,7 @@ That example scores fit 100, urgency 65, route `call_now`.
 | 409 | Nothing accepted: every event is a `conflict`. | The event id was reused for different content. Use a new id. |
 | 403 | Missing or wrong webhook token (from n8n). No workflow run. | Fix the token. |
 | 422 | Body is not valid JSON (from n8n). No workflow run. | Fix the body. |
-| 503 | Database answered with an error. Nothing committed. | Retry with the same ids. Safe. |
+| 503 | Database answered with an error, including a deployment misconfiguration such as a malformed Slack channel. Nothing committed. Ops is alerted. | Retry with the same ids. Safe. |
 | 500 | Database unreachable, so the workflow run failed (from n8n). Nothing confirmed. | Retry with the same ids. Safe. |
 
 Body: `{ "status": <code>, "results": [ ... ] }`, sorted by `index`. Per-event outcomes:

@@ -40,6 +40,14 @@ psql "$LQ_V2_DATABASE_URL" -c 'select * from lq_v2.schema_migrations'
 
 Each file runs as one transaction. Pasting them into the Supabase SQL editor works too. The files are not re-runnable: a second run fails instead of silently skipping. Future changes go in new numbered files.
 
+Then, for v2.0.1 or later:
+
+```bash
+psql "$LQ_V2_DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/003_review_fixes.sql
+```
+
+003 replaces four functions in place (same signatures, grants kept). Rollback: `sql/rollback/003_down.sql` restores the 002 versions; data is untouched. Tested as a round trip (apply, roll back, re-apply).
+
 ### 2. Slack [approval]
 
 Create the channel, install the bot, invite it to the channel, and note the channel ID.

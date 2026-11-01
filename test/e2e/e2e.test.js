@@ -150,6 +150,8 @@ test('E7. database unavailable: 503, nothing written; retry after recovery accep
   assert.equal(r.status, 503);
   assert.deepEqual(r.json, { status: 503, error: 'not_accepted', retry: true });
   assert.equal(await eventCount(run), 0);
+  // Fix 2 visibility: the 503 also pages ops (after the response was sent).
+  await waitFor(async () => (await cloud()).messages.some((m) => m.channel === 'CE2EOPS' && /could not confirm acceptance/.test(m.text)));
   const r2 = await post(ev);
   assert.equal(r2.status, 202);
   assert.equal(r2.json.results[0].outcome, 'accepted');
@@ -246,4 +248,30 @@ test('E12. permanent Slack error: failed, flagged, and ops alerted', async () =>
   });
   assert.ok(err.error_message.includes(n.id));
   await waitFor(async () => (await cloud()).messages.some((m) => m.channel === 'CE2EOPS' && m.text.includes(n.id)));
+});
+
+test('E13. claim-step flag (reconcile exhausted after a crash) alerts ops exactly once; flag persists', async () => {
+  const run = newRunTag();
+  const res = (await post(lead(run, 'hot', PROFILES.highFit))).json.results[0];
+  const cid = res.notification.correlation_id;
+  const n = await waitFor(sendStatus(cid));
+  await pool.query(
+    `update lq_v2.notifications set status = 'uncertain', resolution = null, sent_at = null, operator_required = false,
+       reconcile_count = max_reconciles, next_reconcile_at = now() - interval '1 second' where id = $1`, [n.id]);
+  const alerted = (s) => s.messages.filter((m) => m.channel === 'CE2EOPS' && m.text.includes(n.id)).length;
+  await waitFor(async () => alerted(await cloud()) === 1);
+  await sleep(12000); // two more dispatcher cycles
+  assert.equal(alerted(await cloud()), 1, 'no duplicate alert on later runs');
+  const after = await notif(cid);
+  assert.equal(after.operator_required, true);
+  assert.equal(after.status, 'uncertain');
+  assert.equal(slackCount(await cloud(), n.id), 1, 'no resend');
+});
+
+test('E14. future-dated event is rejected at intake with a field error', async () => {
+  const run = newRunTag();
+  const r = await post(lead(run, 'future', { ...PROFILES.highFit, occurred_at: '2099-01-01T00:00:00Z' }));
+  assert.equal(r.status, 400);
+  assert.equal(r.json.results[0].errors[0].field, 'occurred_at');
+  assert.equal(await eventCount(run), 0);
 });

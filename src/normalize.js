@@ -1,9 +1,14 @@
 // Validates and normalizes intake requests. Contract: docs/v2/event-contract.md.
-// Pure function: no I/O, no clock. Every rejected event is reported with its
-// index and reasons; nothing invalid reaches the database.
+// No I/O; the current time is passed in so tests stay deterministic. Every
+// rejected event is reported with its index and reasons; nothing invalid
+// reaches the database.
 
 const MAX_EVENTS_PER_REQUEST = 50;
 const MAX_EVENT_BYTES = 20000;
+// occurred_at may be at most this far ahead of our clock (sender clock skew).
+// Further ahead would freeze the contact: later events would count as older.
+// lq_v2.accept_event enforces the same limit.
+const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const EVENT_ID_RE = /^[A-Za-z0-9._:-]{1,200}$/;
 const SOURCE_RE = /^[a-z0-9_-]{1,40}$/;
 const EMAIL_RE = /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/;
@@ -66,7 +71,7 @@ function readNumber(ev, names, { integer }, errors) {
   return n;
 }
 
-function normalizeEvent(ev) {
+function normalizeEvent(ev, nowMs = Date.now()) {
   const errors = [];
   if (ev === null || typeof ev !== 'object' || Array.isArray(ev)) {
     return { errors: [{ field: '(event)', problem: 'must be a JSON object' }] };
@@ -95,6 +100,7 @@ function normalizeEvent(ev) {
   if (ev.occurred_at !== undefined && ev.occurred_at !== null) {
     const t = typeof ev.occurred_at === 'string' ? Date.parse(ev.occurred_at) : NaN;
     if (Number.isNaN(t)) errors.push({ field: 'occurred_at', problem: 'must be an ISO 8601 timestamp' });
+    else if (t > nowMs + MAX_FUTURE_SKEW_MS) errors.push({ field: 'occurred_at', problem: 'must not be more than 5 minutes in the future' });
     else occurredAt = new Date(t).toISOString();
   }
 
@@ -163,7 +169,8 @@ function normalizeEvent(ev) {
 }
 
 // body: one event object, or an array of 1..MAX_EVENTS_PER_REQUEST events.
-function normalizeRequest(body) {
+// nowMs: current time in epoch ms (defaults to the system clock).
+function normalizeRequest(body, nowMs = Date.now()) {
   let list;
   if (Array.isArray(body)) {
     if (body.length === 0 || body.length > MAX_EVENTS_PER_REQUEST) {
@@ -185,7 +192,7 @@ function normalizeRequest(body) {
   const valid = [];
   const invalid = [];
   list.forEach((ev, index) => {
-    const r = normalizeEvent(ev);
+    const r = normalizeEvent(ev, nowMs);
     if (r.errors) {
       invalid.push({ index, source_event_id: r.source_event_id || null, errors: r.errors });
       return;
@@ -197,5 +204,5 @@ function normalizeRequest(body) {
 }
 
 // @export-start
-module.exports = { normalizeRequest, normalizeEvent, MAX_EVENTS_PER_REQUEST };
+module.exports = { normalizeRequest, normalizeEvent, MAX_EVENTS_PER_REQUEST, MAX_FUTURE_SKEW_MS };
 // @export-end

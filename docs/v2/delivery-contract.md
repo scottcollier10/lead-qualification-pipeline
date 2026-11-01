@@ -64,7 +64,9 @@ Classification (`src/notify.js`):
 
 - A workflow run that errors (for example the receipt write fails) triggers **LQ v2 - Error Handler**. It posts to the ops channel and writes `lq_v2.workflow_errors` in parallel. Either can fail without blocking the other.
 - A recorded result that needs a human (`failed`, or reconciliation exhausted) makes the dispatcher raise an error at the **Raise Operator Alert** node *after* the state is committed. The error handler then alerts the same way.
-- Known gap: if a dispatcher run crashes mid-reconciliation six times in a row, the claim sweep flags the row without an alert. It still appears in `lq_v2.ops_attention`.
+- If the claim step itself flags a row (reconciliation exhausted after crashes), the dispatcher posts an ops alert directly, before the send branch runs. Each row is reported once (`flagged` in the claim response), so later runs do not repeat it. The flag is committed before the alert, so a failed Slack post loses only the message; the row stays in `lq_v2.ops_attention`.
+- The record functions return `newly_flagged`, true only on the call that set the flag, so Raise Operator Alert fires once per flag.
+- Intake answers a database error with 503, then fails the run after responding so the error handler alerts ops. A malformed Slack channel takes this path instead of being reported as a bad lead.
 
 ## Operator runbook (Supabase SQL editor)
 

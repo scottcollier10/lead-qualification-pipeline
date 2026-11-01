@@ -1,6 +1,6 @@
 {
   "name": "lead-qualification-pipeline-v2",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "Lead Qualification Pipeline v2: local build and test harness for the n8n workflows and lq_v2 schema",
   "scripts": {

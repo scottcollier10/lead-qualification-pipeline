@@ -120,8 +120,22 @@ test('intake Code nodes produce the same payloads as the tested modules', () => 
   assert.equal(respond({ statusCode: 200, body: '{"results":[{"index":0,"outcome":"accepted"}]}' }).statusCode, 207);
   assert.equal(respond(prep).statusCode, 400); // IF false branch passes the prep item through
   for (const failed of [{ statusCode: 503, body: { message: 'down' } }, { statusCode: 401, body: {} }, { statusCode: 200, body: 'garbage' }]) {
-    assert.deepEqual(respond(failed), { statusCode: 503, body: { status: 503, error: 'not_accepted', retry: true } });
+    const r = respond(failed);
+    assert.equal(r.statusCode, 503);
+    assert.deepEqual(r.body, { status: 503, error: 'not_accepted', retry: true }, 'no internal detail leaks to the sender');
+    assert.match(r.alert, /could not confirm acceptance/);
   }
+  // Fix 2: a malformed channel surfaces as a database error -> 503 + ops alert, not a 400.
+  const cfg = respond({ statusCode: 400, body: { code: 'P0001', message: 'notification target missing or malformed: check LQ_V2_SLACK_CHANNEL_ID build setting' } });
+  assert.equal(cfg.statusCode, 503);
+  assert.match(cfg.alert, /target missing or malformed/);
+  assert.equal(respond({ statusCode: 200, body: { results: [{ index: 0, outcome: 'accepted' }] } }).alert, undefined);
+
+  const raise = codeOf(wf, 'Raise Intake Alert');
+  const items = (json) => ({ $input: { first: () => ({ json }), all: () => [{ json }] } });
+  assert.throws(() => runCode(raise, items(cfg)), /target missing or malformed/);
+  assert.equal(runCode(raise, items(mixed)).length, 1);
+  assert.equal(wf.connections['Respond'].main[0][0].node, 'Raise Intake Alert');
 });
 
 test('dispatcher: Slack send has no n8n auto-retry; every HTTP answer reaches classification', () => {
@@ -167,12 +181,27 @@ test('dispatcher raises an alert only when a recorded result needs an operator',
   const wf = load('lq-v2-notification-dispatcher.json');
   const code = codeOf(wf, 'Raise Operator Alert');
   const items = (list) => ({ $input: { all: () => list.map((json) => ({ json })) } });
-  const fine = [{ applied: true, notification: { id: 'a', status: 'sent', operator_required: false } }];
+  const fine = [{ applied: true, newly_flagged: false, notification: { id: 'a', status: 'sent', operator_required: false } }];
   assert.equal(runCode(code, items(fine)).length, 1);
   assert.throws(
-    () => runCode(code, items([...fine, { applied: true, notification: { id: 'b', status: 'failed', operator_required: true } }])),
+    () => runCode(code, items([...fine, { applied: true, newly_flagged: true, notification: { id: 'b', status: 'failed', operator_required: true } }])),
     /needs operator action: b \(failed\)/
   );
+  // Already flagged earlier (e.g. a stale repeat result): no second alert.
+  assert.equal(runCode(code, items([{ applied: false, newly_flagged: false, notification: { id: 'c', status: 'failed', operator_required: true } }])).length, 1);
+
+  // Fix 3: rows newly flagged by the claim step get a direct Slack alert that cannot fail the run.
+  const text = codeOf(wf, 'Flagged Alert Text');
+  const one = (json) => ({ $input: { first: () => ({ json }) } });
+  assert.deepEqual(runCode(text, one({ claims: [], flagged: [] })), []);
+  const alert = runCode(text, one({ claims: [], flagged: [{ id: 'n9', status: 'uncertain' }] }));
+  assert.equal(alert.length, 1);
+  assert.match(alert[0].json.text, /n9/);
+  assert.equal(alert[0].json.channel, '__LQ_V2_SLACK_OPS_CHANNEL_ID__');
+  const post = wf.nodes.find((n) => n.name === 'Slack Flagged Alert');
+  assert.equal(post.parameters.options.response.response.neverError, true);
+  const pos = (name) => wf.nodes.find((n) => n.name === name).position;
+  assert.ok(pos('Flagged Alert Text')[1] < pos('Split Claims')[1], 'flagged alert branch runs before the send branch (v1 order: top first)');
 });
 
 test('error handler reads the documented error payload', () => {
