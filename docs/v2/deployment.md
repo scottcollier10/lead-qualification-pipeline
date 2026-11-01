@@ -106,9 +106,9 @@ Expected results are printed by the script. These checks confirm the items the l
 
 ## Environment notes
 
-- **Render free tier sleeps** after inactivity. While asleep, the dispatcher does not run. Notifications wait in `pending` and are delayed, not lost. A sleeping instance also makes the first webhook slow. If the sender times out, its retry is safe because acceptance is idempotent.
+- **Render instance type:** only Render's Free instance type spins down after inactivity. On a paid instance type the dispatcher runs every minute without interruption. If the service were ever moved to Free, notifications would be delayed (not lost) while it sleeps, and the first webhook after waking would be slow; sender retries are safe either way.
 - **n8n's own SQLite can be wiped** on this host (ephemeral disk). Business state now lives in Supabase, so a wipe loses workflow definitions and credentials, not leads or delivery state. Re-import and pending work drains.
-- The Dispatcher keeps only failed executions in n8n, to avoid 1,440 saved runs a day. Delivery history is in `lq_v2.delivery_attempts`.
+- The Dispatcher keeps only failed executions in n8n (setting applied 2026-11-01), to avoid 1,440 saved runs a day. Delivery history is in `lq_v2.delivery_attempts`.
 
 ## Rollback
 

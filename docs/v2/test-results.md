@@ -82,7 +82,7 @@ Observed n8n behavior that the design now depends on (verified on 2.14.2): a web
 | **Slack metadata round trip / reconciliation** | **Pass** | Row forced to `uncertain`; next dispatcher run found the same ts in `conversations.history` via metadata: `sent (reconciled)`, no second message |
 | Narrow purge | **Pass** | `lq_v2_purge_synthetic_run('smoke1793421159')` removed 2 events, 1 contact, nothing else |
 
-Still open: behavior under load and Render free-tier sleep latency. (Ops-channel alert delivery is now verified live; see the v2.0.1 table.)
+Still open: behavior under load. (Render spin-down applies only to the Free instance type; the service runs on a paid plan.) (Ops-channel alert delivery is now verified live; see the v2.0.1 table.)
 
 Out of scope by decision: HubSpot intake and signature verification (synthetic intake uses a shared header token), CRM writeback, AI scoring, enrichment, Slack buttons, nurture email sending.
 
