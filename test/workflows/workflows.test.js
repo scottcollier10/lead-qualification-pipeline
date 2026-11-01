@@ -66,6 +66,19 @@ for (const f of files) {
       assert.ok(!text.includes(legacy), `${f} references legacy ${legacy}`);
     }
     assert.ok(!/xoxb-|eyJhbGci|sk-ant-/.test(text), 'no secrets');
+    // Committed exports must never carry a real credential binding: every
+    // credential reference is a build placeholder, whatever environment it
+    // came from.
+    for (const n of wf.nodes) {
+      for (const [type, ref] of Object.entries(n.credentials || {})) {
+        assert.match(ref.id, /^__LQ_V2_CRED_[A-Z]+_ID__$/, `${n.name} ${type} id is not a placeholder`);
+        assert.match(ref.name, /^__LQ_V2_CRED_[A-Z]+_NAME__$/, `${n.name} ${type} name is not a placeholder`);
+      }
+    }
+    // Same for environment values: Supabase URL and Slack channels.
+    assert.ok(!/https:\/\/[a-z0-9]{20}\.supabase\.co/.test(text), 'real Supabase project URL');
+    // Quotes inside Code nodes and expressions are escaped in the JSON text.
+    assert.ok(!/\\?"C[A-Z0-9]{8,}\\?"/.test(text.replace(/__LQ_V2_[A-Z_]+__/g, '')), 'real Slack channel ID');
     // The n8n-workflow-builder MCP drops per-node onError/continueOnFail, so
     // the workflows must not depend on them.
     for (const n of wf.nodes) {
